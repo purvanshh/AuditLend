@@ -1,1 +1,116 @@
+from __future__ import annotations
 
+import os
+from collections.abc import Generator
+from typing import Any
+
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
+
+
+TEST_DATABASE_URL = os.getenv(
+    "AUDITLEND_TEST_DATABASE_URL",
+    os.getenv("DATABASE_URL", "postgresql://auditlend:auditlend@localhost:5432/auditlend"),
+)
+TEST_ASYNC_DATABASE_URL = os.getenv(
+    "AUDITLEND_TEST_ASYNC_DATABASE_URL",
+    os.getenv("ASYNC_DATABASE_URL", "postgresql+asyncpg://auditlend:auditlend@localhost:5432/auditlend"),
+)
+TEST_REDIS_URL = os.getenv(
+    "AUDITLEND_TEST_REDIS_URL",
+    os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+)
+
+os.environ.setdefault("DATABASE_URL", TEST_DATABASE_URL)
+os.environ.setdefault("ASYNC_DATABASE_URL", TEST_ASYNC_DATABASE_URL)
+os.environ.setdefault("REDIS_URL", TEST_REDIS_URL)
+
+
+def _postgres_available() -> bool:
+    try:
+        engine = create_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        engine.dispose()
+        return True
+    except Exception:
+        return False
+
+
+@pytest.fixture
+def sample_user_data() -> dict[str, Any]:
+    return {
+        "name": "Jane Doe",
+        "pan": "ABCDE1234F",
+        "monthly_income": 120000,
+        "existing_emis": 25000,
+        "loan_amount": 500000,
+        "tenure_months": 36,
+    }
+
+
+@pytest.fixture
+def sample_apply_payload(sample_user_data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "idempotency_key": "test-apply-001",
+        "user_data": sample_user_data,
+        "failure_flags": {
+            "credit_bureau": "SUCCESS",
+            "bank_analyzer": "SUCCESS",
+            "gst_verifier": "SUCCESS",
+        },
+    }
+
+
+@pytest.fixture(scope="session")
+def postgres_engine() -> Generator[Engine, None, None]:
+    if not _postgres_available():
+        pytest.skip("PostgreSQL is not available; start docker compose or set AUDITLEND_TEST_DATABASE_URL")
+
+    command.upgrade(Config("alembic.ini"), "head")
+    engine = create_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture
+def clean_database(postgres_engine: Engine) -> Generator[Engine, None, None]:
+    _truncate_database(postgres_engine)
+    try:
+        yield postgres_engine
+    finally:
+        _truncate_database(postgres_engine)
+
+
+@pytest.fixture
+def api_client(clean_database: Engine, monkeypatch: pytest.MonkeyPatch):
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+    from api.routes import applications
+
+    enqueued: list[str] = []
+
+    def fake_delay(application_id: str) -> None:
+        enqueued.append(application_id)
+
+    monkeypatch.setattr(applications.process_application, "delay", fake_delay)
+
+    client = TestClient(app)
+    client.enqueued_applications = enqueued
+    return client
+
+
+def _truncate_database(engine: Engine) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "TRUNCATE TABLE audit_logs, external_data, idempotency_records, "
+                "loan_applications RESTART IDENTITY CASCADE"
+            )
+        )
