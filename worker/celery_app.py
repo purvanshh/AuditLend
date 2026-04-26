@@ -1,6 +1,16 @@
 import os
 
 from celery import Celery
+import structlog
+
+
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.processors.add_log_level,
+        structlog.processors.JSONRenderer(),
+    ],
+)
 
 
 celery_app = Celery(
@@ -15,4 +25,5 @@ celery_app.conf.update(
     accept_content=["json"],
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    timezone="UTC",
 )
