@@ -59,7 +59,7 @@ def test_low_confidence_overrides_high_rule_score_to_manual_review() -> None:
     assert output.decision == Decision.NEEDS_REVIEW
     assert output.confidence == 0.4
     assert output.requires_manual_review is True
-    assert output.factors[-1] == "Confidence below threshold — routed to manual review"
+    assert output.factors[-1] == "Confidence below threshold - routed to manual review"
 
 
 def test_confidence_exactly_at_threshold_is_not_overridden() -> None:

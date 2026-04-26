@@ -64,7 +64,7 @@ def compute_decision(
     requires_manual_review = confidence < confidence_threshold
     if requires_manual_review:
         decision = Decision.NEEDS_REVIEW
-        factors.append("Confidence below threshold — routed to manual review")
+        factors.append("Confidence below threshold - routed to manual review")
 
     return DecisionOutput(
         decision=decision,

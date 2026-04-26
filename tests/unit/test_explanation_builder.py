@@ -21,7 +21,7 @@ def test_build_explanation_from_degraded_audit_trail() -> None:
                     "credit_score (fallback) = 600",
                     "income_stability (live) = 0.8",
                     "dti (computed) = 0.25",
-                    "Confidence below threshold — routed to manual review",
+                    "Confidence below threshold - routed to manual review",
                 ],
                 "rule_version": "RULE_SET_V1",
             },
