@@ -1,1 +1,137 @@
-services: {}
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: auditlend
+      POSTGRES_USER: auditlend
+      POSTGRES_PASSWORD: auditlend
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auditlend"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  credit-bureau:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock
+    command: uvicorn mock_apis.credit_bureau:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+
+  bank-analyzer:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock
+    command: uvicorn mock_apis.bank_analyzer:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8002:8002"
+
+  gst-verifier:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock
+    command: uvicorn mock_apis.gst_verifier:app --host 0.0.0.0 --port 8003
+    ports:
+      - "8003:8003"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://auditlend:auditlend@postgres:5432/auditlend
+      ASYNC_DATABASE_URL: postgresql+asyncpg://auditlend:auditlend@postgres:5432/auditlend
+      REDIS_URL: redis://redis:6379/0
+      CREDIT_BUREAU_URL: http://credit-bureau:8001
+      BANK_ANALYZER_URL: http://bank-analyzer:8002
+      GST_VERIFIER_URL: http://gst-verifier:8003
+      CONFIDENCE_THRESHOLD: "0.6"
+      RULE_SET_VERSION: RULE_SET_V1
+      CIRCUIT_BREAKER_THRESHOLD: "5"
+      CIRCUIT_BREAKER_WINDOW_SECONDS: "60"
+      CIRCUIT_BREAKER_TIMEOUT_SECONDS: "120"
+      MAX_RETRIES: "3"
+      RETRY_BACKOFF_BASE_SECONDS: "2"
+      TASK_TIMEOUT_SECONDS: "60"
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      credit-bureau:
+        condition: service_started
+      bank-analyzer:
+        condition: service_started
+      gst-verifier:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    command: celery -A worker.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      DATABASE_URL: postgresql://auditlend:auditlend@postgres:5432/auditlend
+      ASYNC_DATABASE_URL: postgresql+asyncpg://auditlend:auditlend@postgres:5432/auditlend
+      REDIS_URL: redis://redis:6379/0
+      CREDIT_BUREAU_URL: http://credit-bureau:8001
+      BANK_ANALYZER_URL: http://bank-analyzer:8002
+      GST_VERIFIER_URL: http://gst-verifier:8003
+      CONFIDENCE_THRESHOLD: "0.6"
+      RULE_SET_VERSION: RULE_SET_V1
+      CIRCUIT_BREAKER_THRESHOLD: "5"
+      CIRCUIT_BREAKER_WINDOW_SECONDS: "60"
+      CIRCUIT_BREAKER_TIMEOUT_SECONDS: "120"
+      MAX_RETRIES: "3"
+      RETRY_BACKOFF_BASE_SECONDS: "2"
+      TASK_TIMEOUT_SECONDS: "60"
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      credit-bureau:
+        condition: service_started
+      bank-analyzer:
+        condition: service_started
+      gst-verifier:
+        condition: service_started
+
+  flower:
+    image: mher/flower:2.0
+    command: celery flower --broker=redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

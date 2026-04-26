@@ -31,7 +31,22 @@ def process_application(self, application_id: str) -> dict[str, Any]:
     IDEMPOTENT: If application is already terminal or processing, returns stored state.
     """
     try:
-        return asyncio.run(_process_application(application_id))
+        timeout_seconds = int(os.getenv("TASK_TIMEOUT_SECONDS", "60"))
+        return asyncio.run(asyncio.wait_for(_process_application(application_id), timeout=timeout_seconds))
+    except TimeoutError as exc:
+        logger.exception(
+            "process_application_timeout",
+            application_id=application_id,
+            step="PROCESS_APPLICATION",
+            error=str(exc),
+        )
+        _mark_manual_review_after_system_error(application_id, exc, error_type="PIPELINE_TIMEOUT")
+        return {
+            "application_id": application_id,
+            "status": "MANUAL_REVIEW",
+            "decision": Decision.NEEDS_REVIEW.value,
+            "error_type": "PIPELINE_TIMEOUT",
+        }
     except Exception as exc:
         logger.exception(
             "process_application_unhandled_error",
@@ -39,7 +54,7 @@ def process_application(self, application_id: str) -> dict[str, Any]:
             step="PROCESS_APPLICATION",
             error=str(exc),
         )
-        _mark_manual_review_after_system_error(application_id, exc)
+        _mark_manual_review_after_system_error(application_id, exc, error_type="SYSTEM_ERROR")
         return {
             "application_id": application_id,
             "status": "MANUAL_REVIEW",
@@ -103,7 +118,7 @@ def _claim_application(application_id: str) -> dict[str, Any]:
             .with_for_update()
         ).scalar_one()
 
-        if application.status in {"PROCESSING", "COMPLETED", "MANUAL_REVIEW"}:
+        if application.status in {"COMPLETED", "MANUAL_REVIEW"}:
             logger.info(
                 "application_already_claimed_or_processed",
                 application_id=application_id,
@@ -124,7 +139,7 @@ def _claim_application(application_id: str) -> dict[str, Any]:
         write_audit_entry(
             application_id=application.id,
             step="PROCESSING_STARTED",
-            input_snapshot={"status": "PENDING"},
+            input_snapshot={"status": application.status},
             output_snapshot={"status": "PROCESSING"},
             session=session,
         )
@@ -265,7 +280,7 @@ def _store_external_result(
     )
 
 
-def _mark_manual_review_after_system_error(application_id: str, exc: Exception) -> None:
+def _mark_manual_review_after_system_error(application_id: str, exc: Exception, error_type: str) -> None:
     with get_sync_session() as session:
         application = session.get(LoanApplication, UUID(application_id))
         if application is None:
@@ -274,10 +289,10 @@ def _mark_manual_review_after_system_error(application_id: str, exc: Exception) 
         application.decision = Decision.NEEDS_REVIEW.value
         write_audit_entry(
             application_id=application.id,
-            step="SYSTEM_ERROR",
+            step=error_type,
             input_snapshot={"application_id": application_id},
             output_snapshot={"status": "MANUAL_REVIEW", "decision": Decision.NEEDS_REVIEW.value},
-            error_type="SYSTEM_ERROR",
+            error_type=error_type,
             fallback_used=True,
             fallback_reason=str(exc),
             rule_version=os.getenv("RULE_SET_VERSION", "RULE_SET_V1"),
