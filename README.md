@@ -2,7 +2,7 @@
 
 Every decision, explained. Every failure, handled. Every step, audited.
 
-AuditLend is a production-grade reference implementation of a credit decision engine. It processes loan applications asynchronously, handles deterministic external-data failures, degrades confidence when data quality drops, stores immutable audit logs, and returns borrower- or reviewer-friendly explanations for every decision.
+AuditLend is a production-grade reference implementation of a credit decision engine. It processes loan applications asynchronously, handles deterministic external-data failures, computes a weighted risk score, separates data reliability from calibrated decision confidence, protects PII at rest, stores immutable audit logs, exposes Prometheus metrics, and returns borrower- or reviewer-friendly explanations for every decision.
 
 ## Quick Start
 
@@ -149,7 +149,9 @@ Expected decision characteristics:
 ```json
 {
   "decision": "APPROVE",
+  "risk_score": 88.35,
   "confidence": 1.0,
+  "data_reliability": 1.0,
   "rule_version": "RULE_SET_V1"
 }
 ```
@@ -233,15 +235,19 @@ Expected decision characteristics:
 ```json
 {
   "decision": "NEEDS_REVIEW",
-  "confidence": 0.6,
+  "risk_score": 72.46,
+  "confidence": 0.54,
+  "data_reliability": 0.6,
   "factors": [
-    "credit_score (fallback) = 600"
+    "risk_score (computed) = 72.46",
+    "credit_component (fallback) = 26.67/40.00 (credit_score=600)",
+    "Confidence below threshold - routed to manual review"
   ],
   "rule_version": "RULE_SET_V1"
 }
 ```
 
-Why: `TIMEOUT` subtracts `0.30`, fallback credit subtracts `0.10`, so confidence becomes `0.60`. The fallback score of `600` is borderline, so the rule engine routes the application to review even though the confidence threshold is not crossed.
+Why: `TIMEOUT` plus fallback credit lowers `data_reliability` to `0.60`. The risk score is still numerically approvable, but calibrated confidence applies the boundary-distance factor and falls to `0.54`, forcing manual review.
 
 Audit trace:
 
@@ -295,9 +301,11 @@ Expected decision characteristics:
 ```json
 {
   "decision": "APPROVE",
-  "confidence": 0.8,
+  "risk_score": 77.9,
+  "confidence": 0.72,
+  "data_reliability": 0.8,
   "factors": [
-    "income_stability (partial) = 0.5"
+    "income_stability_component (default) = 10.00/20.00 (income_stability=0.50)"
   ]
 }
 ```
@@ -360,11 +368,13 @@ Expected decision characteristics:
 ```json
 {
   "decision": "NEEDS_REVIEW",
-  "confidence": 0.2,
+  "risk_score": 36.46,
+  "confidence": 0.1,
+  "data_reliability": 0.2,
   "factors": [
-    "credit_score (fallback) = 600",
-    "income_stability (default) = 0.5",
-    "gst_compliant (fallback) = False",
+    "risk_score (computed) = 36.46",
+    "credit_component (fallback) = 26.67/40.00 (credit_score=600)",
+    "gst_gate (applied) = risk_score capped at 36.46",
     "Confidence below threshold - routed to manual review"
   ]
 }
@@ -388,6 +398,44 @@ Expected explanation characteristics:
     {"step": "GST_VERIFIER_FETCH", "status": "NO_RECORD"},
     {"step": "DECISION_CALCULATION", "status": "NEEDS_REVIEW"},
     {"step": "MANUAL_REVIEW_OVERRIDE", "status": "NEEDS_REVIEW"}
+  ]
+}
+```
+
+### Scenario 5: GST Non-Compliance Blocks Approval
+
+Even with excellent credit, explicit GST non-compliance is a gating factor. The engine caps the effective risk score at `54`, preventing automatic approval and routing the application to review unless another decline rule applies.
+
+```bash
+APP_ID=$(curl -s -X POST http://localhost:8000/api/v1/apply-loan \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: demo-gst-mismatch-001" \
+  -d '{
+    "idempotency_key": "demo-gst-mismatch-001",
+    "user_data": {
+      "name": "Jane Doe",
+      "pan": "AAAAA1111F",
+      "monthly_income": 150000,
+      "existing_emis": 10000,
+      "loan_amount": 500000,
+      "tenure_months": 36
+    },
+    "failure_flags": {
+      "credit_bureau": "SUCCESS",
+      "bank_analyzer": "SUCCESS",
+      "gst_verifier": "PAN_MISMATCH"
+    }
+  }' | jq -r '.application_id')
+```
+
+Expected decision characteristics:
+
+```json
+{
+  "decision": "NEEDS_REVIEW",
+  "factors": [
+    "gst_component (non_compliant) = 0.00/15.00",
+    "gst_gate (applied) = risk_score capped at 54.00"
   ]
 }
 ```
@@ -462,7 +510,9 @@ If complete:
   "application_id": "uuid",
   "decision": "APPROVE|DECLINE|NEEDS_REVIEW",
   "confidence": 1.0,
-  "factors": ["credit_score (live) = 813"],
+  "data_reliability": 1.0,
+  "risk_score": 88.35,
+  "factors": ["risk_score (computed) = 88.35"],
   "rule_version": "RULE_SET_V1"
 }
 ```
@@ -486,6 +536,16 @@ Returns:
   "generated_at": "timestamp"
 }
 ```
+
+### `GET /metrics`
+
+Exposes Prometheus metrics, including:
+
+- `auditlend_applications_total`
+- `auditlend_external_api_requests_total`
+- `auditlend_external_api_latency_seconds`
+- `auditlend_circuit_breaker_state`
+- `auditlend_decision_confidence`
 
 ### Error Format
 
@@ -531,17 +591,21 @@ curl "http://localhost:8003/verify-gst?pan=AAAAA1111F&fail_mode=NO_RECORD"
 | `DATABASE_URL` | Sync SQLAlchemy/Postgres URL for workers and migrations | `postgresql://auditlend:auditlend@postgres:5432/auditlend` |
 | `ASYNC_DATABASE_URL` | Async SQLAlchemy/Postgres URL for FastAPI | `postgresql+asyncpg://auditlend:auditlend@postgres:5432/auditlend` |
 | `REDIS_URL` | Celery broker/result backend and circuit state | `redis://redis:6379/0` |
+| `IDEMPOTENCY_CACHE_TTL_SECONDS` | Redis idempotency replay cache TTL | `86400` |
 | `CREDIT_BUREAU_URL` | Credit bureau service base URL | `http://credit-bureau:8001` |
 | `BANK_ANALYZER_URL` | Bank analyzer service base URL | `http://bank-analyzer:8002` |
 | `GST_VERIFIER_URL` | GST verifier service base URL | `http://gst-verifier:8003` |
 | `CONFIDENCE_THRESHOLD` | Below this value, force manual review | `0.6` |
 | `RULE_SET_VERSION` | Active rule version recorded in audit logs | `RULE_SET_V1` |
+| `PII_ENCRYPTION_KEY` | Hex-encoded AES-GCM key for encrypted user data | dev-only zero key |
+| `PAN_HASH_SALT` | Salt used for SHA-256 PAN hashing | `auditlend-dev-salt` |
 | `CIRCUIT_BREAKER_THRESHOLD` | Failures before opening service circuit | `5` |
 | `CIRCUIT_BREAKER_WINDOW_SECONDS` | Failure counting window | `60` |
 | `CIRCUIT_BREAKER_TIMEOUT_SECONDS` | Open circuit cooldown | `120` |
 | `MAX_RETRIES` | Per-service retry count | `3` |
 | `RETRY_BACKOFF_BASE_SECONDS` | Exponential backoff base | `2` |
 | `TASK_TIMEOUT_SECONDS` | Worker processing watchdog | `60` |
+| `PROCESSING_LOCK_TIMEOUT_SECONDS` | Age after which stuck PROCESSING apps can be reclaimed | `300` |
 | `LOG_LEVEL` | Runtime logging level | `INFO` |
 
 ## Testing
@@ -583,7 +647,7 @@ Then:
 Engine coverage:
 
 ```bash
-.venv/bin/pytest tests/unit/test_confidence.py tests/unit/test_rules.py tests/unit/test_decision_engine.py \
+.venv/bin/pytest tests/unit/test_scoring.py tests/unit/test_confidence.py tests/unit/test_confidence_calibrated.py tests/unit/test_rules.py tests/unit/test_decision_engine.py \
   -q --cov=engine --cov-report=term-missing
 ```
 
@@ -593,7 +657,9 @@ AuditLend is built around a few non-negotiable ideas:
 
 - Determinism beats cleverness. Business outputs must be replayable from inputs.
 - Idempotency is part of correctness, not an API nicety.
-- Every fallback must lower confidence.
+- Risk score, data reliability, and calibrated confidence are distinct values.
+- Every fallback must lower data reliability.
+- Raw PAN is never stored in plaintext; application PII is AES-GCM encrypted at rest.
 - Every important step must write an audit entry with input, output, failure type, fallback usage, and rule version.
 - The explanation endpoint must read from the audit trail, not from whatever the current code thinks would happen today.
 - External failures are named states, not surprises.
