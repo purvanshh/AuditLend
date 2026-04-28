@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Column, DateTime, Index, Numeric, String, text
+from sqlalchemy import Column, DateTime, Index, LargeBinary, Numeric, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from db.base import Base
@@ -16,7 +16,10 @@ class LoanApplication(Base):
         server_default=text("uuid_generate_v4()"),
     )
     idempotency_key = Column(String(255), nullable=False)
-    user_data = Column(JSONB, nullable=False)
+    user_data = Column(JSONB, nullable=True)
+    pan_hash = Column(String(64), nullable=True)
+    encrypted_user_data = Column(LargeBinary, nullable=True)
+    encryption_nonce = Column(LargeBinary, nullable=True)
     status = Column(String(20), nullable=False, default="PENDING", server_default=text("'PENDING'"))
     decision = Column(String(30), nullable=True)
     confidence = Column(Numeric(3, 2), nullable=True)
@@ -31,4 +34,5 @@ class LoanApplication(Base):
     __table_args__ = (
         Index("idx_loan_status", "status"),
         Index("idx_loan_idempotency", "idempotency_key"),
+        Index("idx_loan_pan_hash", "pan_hash"),
     )

@@ -1,5 +1,5 @@
 import hashlib
-import uuid
+from datetime import UTC, datetime
 from enum import StrEnum
 from time import perf_counter
 
@@ -26,8 +26,9 @@ def _seed(pan: str) -> int:
     return int(_pan_hash(pan)[:8], 16)
 
 
-def _request_id() -> str:
-    return f"gst_{uuid.uuid4().hex}"
+def _request_id(pan: str, fail_mode: GstFailMode) -> str:
+    hour_bucket = datetime.now(UTC).strftime("%Y%m%d%H")
+    return hashlib.sha256(f"{pan}:{fail_mode.value}:{hour_bucket}".encode("utf-8")).hexdigest()[:12]
 
 
 def _log_request(pan: str, fail_mode: GstFailMode, status_code: int, started_at: float) -> None:
@@ -59,14 +60,14 @@ def verify_gst(
             "pan": pan,
             "match": False,
             "error": "PAN does not match GST records",
-            "request_id": _request_id(),
+            "request_id": _request_id(pan, fail_mode),
         }
 
     if fail_mode == GstFailMode.NO_RECORD:
         _log_request(pan, fail_mode, 404, started_at)
         return JSONResponse(
             status_code=404,
-            content={"error": "No GST record found for this PAN", "request_id": _request_id()},
+            content={"error": "No GST record found for this PAN", "request_id": _request_id(pan, fail_mode)},
         )
 
     payload = {
@@ -74,7 +75,7 @@ def verify_gst(
         "gst_compliant": True,
         "annual_turnover": 1_000_000 + (_seed(pan) % 4_000_001),
         "filing_status": "REGULAR",
-        "request_id": _request_id(),
+        "request_id": _request_id(pan, fail_mode),
     }
     _log_request(pan, fail_mode, 200, started_at)
     return payload

@@ -1,7 +1,6 @@
 import hashlib
 import time
-import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import StrEnum
 from time import perf_counter
 
@@ -21,12 +20,17 @@ class CreditFailMode(StrEnum):
     SERVICE_DOWN = "SERVICE_DOWN"
 
 
+CURRENT_REFERENCE_DATE = datetime(2026, 4, 1, tzinfo=UTC)
+STALE_REFERENCE_DATE = datetime(2025, 7, 15, tzinfo=UTC)
+
+
 def _pan_hash(pan: str) -> str:
     return hashlib.sha256(pan.encode("utf-8")).hexdigest()
 
 
-def _request_id(pan: str) -> str:
-    return f"credit_{uuid.uuid4().hex}"
+def _request_id(pan: str, fail_mode: CreditFailMode) -> str:
+    hour_bucket = datetime.now(UTC).strftime("%Y%m%d%H")
+    return hashlib.sha256(f"{pan}:{fail_mode.value}:{hour_bucket}".encode("utf-8")).hexdigest()[:12]
 
 
 def _credit_score(pan: str) -> int:
@@ -34,13 +38,13 @@ def _credit_score(pan: str) -> int:
     return 300 + (seed % 601)
 
 
-def _success_payload(pan: str, last_updated: datetime) -> dict[str, str | int]:
+def _success_payload(pan: str, fail_mode: CreditFailMode, last_updated: datetime) -> dict[str, str | int]:
     return {
         "pan": pan,
         "credit_score": _credit_score(pan),
         "last_updated": last_updated.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "bureau": "AuditLendMock",
-        "request_id": _request_id(pan),
+        "request_id": _request_id(pan, fail_mode),
     }
 
 
@@ -72,18 +76,17 @@ def credit_score(
         _log_request(pan, fail_mode, 408, started_at)
         return JSONResponse(
             status_code=408,
-            content={"error": "Request timeout", "request_id": _request_id(pan)},
+            content={"error": "Request timeout", "request_id": _request_id(pan, fail_mode)},
         )
 
     if fail_mode == CreditFailMode.SERVICE_DOWN:
         _log_request(pan, fail_mode, 503, started_at)
         return JSONResponse(
             status_code=503,
-            content={"error": "Service unavailable", "request_id": _request_id(pan)},
+            content={"error": "Service unavailable", "request_id": _request_id(pan, fail_mode)},
         )
 
-    now = datetime.now(UTC)
-    last_updated = now - timedelta(days=90) if fail_mode == CreditFailMode.STALE_DATA else datetime(2026, 4, 1, tzinfo=UTC)
-    payload = _success_payload(pan, last_updated)
+    last_updated = STALE_REFERENCE_DATE if fail_mode == CreditFailMode.STALE_DATA else CURRENT_REFERENCE_DATE
+    payload = _success_payload(pan, fail_mode, last_updated)
     _log_request(pan, fail_mode, 200, started_at)
     return payload

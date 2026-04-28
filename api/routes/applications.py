@@ -11,6 +11,7 @@ from api.dependencies import get_async_session
 from api.schemas.application import ApplyLoanRequest, ApplyLoanResponse, StatusResponse
 from models.application import LoanApplication
 from models.idempotency import IdempotencyRecord
+from services.crypto import pii_service_from_env
 from worker.tasks.process_application import process_application
 
 router = APIRouter()
@@ -34,9 +35,16 @@ async def apply_loan(
         response.status_code = status.HTTP_200_OK
         return ApplyLoanResponse(**existing.response["public"])
 
+    pii_service = pii_service_from_env()
+    user_data = request.user_data.model_dump(mode="json")
+    encrypted_user_data, encryption_nonce = pii_service.encrypt_pii(user_data)
+
     application = LoanApplication(
         idempotency_key=key,
-        user_data=request.user_data.model_dump(mode="json"),
+        user_data=None,
+        pan_hash=pii_service.hash_pan(request.user_data.pan),
+        encrypted_user_data=encrypted_user_data,
+        encryption_nonce=encryption_nonce,
         failure_flags=(request.failure_flags.model_dump(mode="json", exclude_none=True) if request.failure_flags else None),
         status="PENDING",
     )

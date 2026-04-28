@@ -1,5 +1,5 @@
 import hashlib
-import uuid
+from datetime import UTC, datetime
 from enum import StrEnum
 from time import perf_counter
 
@@ -32,11 +32,12 @@ def _seed(pan: str) -> int:
     return int(_pan_hash(pan)[:8], 16)
 
 
-def _request_id() -> str:
-    return f"bank_{uuid.uuid4().hex}"
+def _request_id(pan: str, fail_mode: BankFailMode) -> str:
+    hour_bucket = datetime.now(UTC).strftime("%Y%m%d%H")
+    return hashlib.sha256(f"{pan}:{fail_mode.value}:{hour_bucket}".encode("utf-8")).hexdigest()[:12]
 
 
-def _analysis(pan: str) -> dict[str, str | int | float]:
+def _analysis(pan: str, fail_mode: BankFailMode) -> dict[str, str | int | float]:
     seed = _seed(pan)
     monthly_inflow = 80_000 + (seed % 90_001)
     monthly_outflow = int(monthly_inflow * (0.35 + ((seed >> 4) % 30) / 100))
@@ -49,7 +50,7 @@ def _analysis(pan: str) -> dict[str, str | int | float]:
         "monthly_inflow": monthly_inflow,
         "monthly_outflow": monthly_outflow,
         "irregular_transactions": seed % 6,
-        "request_id": _request_id(),
+        "request_id": _request_id(pan, fail_mode),
     }
 
 
@@ -83,11 +84,11 @@ def analyze(
             content={
                 "error": "Unable to parse bank statement",
                 "details": "Unexpected format at line 42",
-                "request_id": _request_id(),
+                "request_id": _request_id(request.pan, fail_mode),
             },
         )
 
-    payload = _analysis(request.pan)
+    payload = _analysis(request.pan, fail_mode)
     if fail_mode == BankFailMode.PARTIAL_DATA:
         _log_request(request.pan, fail_mode, 200, started_at)
         return {
