@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -24,6 +25,7 @@ def test_worker_redelivery_recovers_processing_application(monkeypatch, clean_da
                 user_data=sample_user_data,
                 failure_flags={},
                 status="PROCESSING",
+                updated_at=datetime.now(UTC) - timedelta(seconds=600),
             )
         )
         session.commit()

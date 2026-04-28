@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.routes import applications, decisions, explanations
@@ -35,6 +36,8 @@ app.add_middleware(
 app.include_router(applications.router, prefix="/api/v1", tags=["applications"])
 app.include_router(decisions.router, prefix="/api/v1", tags=["decisions"])
 app.include_router(explanations.router, prefix="/api/v1", tags=["explanations"])
+
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 
 @app.middleware("http")

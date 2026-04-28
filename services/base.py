@@ -9,6 +9,12 @@ import httpx
 import structlog
 
 from services import FailureType, ServiceResult
+from services.metrics import (
+    circuit_breaker_state,
+    circuit_state_value,
+    external_api_latency,
+    external_api_requests,
+)
 
 
 class CircuitState(StrEnum):
@@ -46,6 +52,8 @@ class BaseExternalService:
                 application_id=application_id,
                 step="EXTERNAL_SERVICE_CALL",
             )
+            self._record_metrics(FailureType.SERVICE_DOWN.value, 0.0)
+            circuit_breaker_state.labels(service=self.service_name).set(circuit_state_value(CircuitState.OPEN.value))
             return ServiceResult(
                 success=False,
                 failure_type=FailureType.SERVICE_DOWN,
@@ -58,6 +66,7 @@ class BaseExternalService:
 
         for attempt in range(max_retries + 1):
             result = await self._attempt_call(method, path, params, body, fail_mode)
+            self._record_metrics(_result_status(result), result.latency_ms)
             result.retry_count = retry_count
             last_result = result
 
@@ -191,11 +200,16 @@ class BaseExternalService:
                 elapsed = monotonic() - float(last_failure)
                 if elapsed >= self._env_int("CIRCUIT_BREAKER_TIMEOUT_SECONDS", 120):
                     await self._redis_set(state_key, CircuitState.HALF_OPEN.value)
+                    circuit_breaker_state.labels(service=self.service_name).set(
+                        circuit_state_value(CircuitState.HALF_OPEN.value)
+                    )
                     self.logger.info("circuit_half_open", step="CIRCUIT_BREAKER")
                     return CircuitState.HALF_OPEN
+        circuit_breaker_state.labels(service=self.service_name).set(circuit_state_value(str(state)))
         return CircuitState(state)
 
     async def _record_success(self) -> None:
+        circuit_breaker_state.labels(service=self.service_name).set(circuit_state_value(CircuitState.CLOSED.value))
         if self.redis is None:
             return
         await self._redis_set(self._circuit_key("state"), CircuitState.CLOSED.value)
@@ -212,6 +226,7 @@ class BaseExternalService:
         threshold = self._env_int("CIRCUIT_BREAKER_THRESHOLD", 5)
         if count >= threshold:
             await self._redis_set(self._circuit_key("state"), CircuitState.OPEN.value)
+            circuit_breaker_state.labels(service=self.service_name).set(circuit_state_value(CircuitState.OPEN.value))
             self.logger.warning("circuit_opened", step="CIRCUIT_BREAKER", failure_count=count)
 
     def _circuit_key(self, suffix: str) -> str:
@@ -236,6 +251,10 @@ class BaseExternalService:
 
     def _latency_ms(self, started_at: float) -> float:
         return round((monotonic() - started_at) * 1000, 2)
+
+    def _record_metrics(self, status: str, latency_ms: float) -> None:
+        external_api_requests.labels(service=self.service_name, status=status).inc()
+        external_api_latency.labels(service=self.service_name).observe(max(latency_ms, 0.0) / 1000)
 
     def _env_int(self, name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
@@ -265,3 +284,11 @@ class BaseExternalService:
 
     async def _redis_delete(self, key: str) -> None:
         await self._maybe_await(self.redis.delete(key))
+
+
+def _result_status(result: ServiceResult) -> str:
+    if result.success:
+        return "success"
+    if result.failure_type is not None:
+        return result.failure_type.value
+    return "unknown"

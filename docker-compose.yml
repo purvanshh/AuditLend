@@ -60,6 +60,7 @@ services:
       DATABASE_URL: postgresql://auditlend:auditlend@postgres:5432/auditlend
       ASYNC_DATABASE_URL: postgresql+asyncpg://auditlend:auditlend@postgres:5432/auditlend
       REDIS_URL: redis://redis:6379/0
+      IDEMPOTENCY_CACHE_TTL_SECONDS: "86400"
       CREDIT_BUREAU_URL: http://credit-bureau:8001
       BANK_ANALYZER_URL: http://bank-analyzer:8002
       GST_VERIFIER_URL: http://gst-verifier:8003
@@ -73,6 +74,7 @@ services:
       MAX_RETRIES: "3"
       RETRY_BACKOFF_BASE_SECONDS: "2"
       TASK_TIMEOUT_SECONDS: "60"
+      PROCESSING_LOCK_TIMEOUT_SECONDS: "300"
       LOG_LEVEL: INFO
     depends_on:
       postgres:
@@ -100,6 +102,7 @@ services:
       DATABASE_URL: postgresql://auditlend:auditlend@postgres:5432/auditlend
       ASYNC_DATABASE_URL: postgresql+asyncpg://auditlend:auditlend@postgres:5432/auditlend
       REDIS_URL: redis://redis:6379/0
+      IDEMPOTENCY_CACHE_TTL_SECONDS: "86400"
       CREDIT_BUREAU_URL: http://credit-bureau:8001
       BANK_ANALYZER_URL: http://bank-analyzer:8002
       GST_VERIFIER_URL: http://gst-verifier:8003
@@ -113,6 +116,7 @@ services:
       MAX_RETRIES: "3"
       RETRY_BACKOFF_BASE_SECONDS: "2"
       TASK_TIMEOUT_SECONDS: "60"
+      PROCESSING_LOCK_TIMEOUT_SECONDS: "300"
       LOG_LEVEL: INFO
     depends_on:
       postgres:

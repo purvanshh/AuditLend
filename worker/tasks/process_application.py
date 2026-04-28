@@ -1,12 +1,13 @@
 import asyncio
 import os
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 import redis.asyncio as redis_async
 import structlog
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 
 from db.session import get_sync_session
 from engine.decision import DecisionOutput, compute_decision_from_env
@@ -19,6 +20,7 @@ from services.bank_analyzer import BankAnalyzerService
 from services.credit_bureau import CreditBureauService
 from services.crypto import pii_service_from_env
 from services.gst_verifier import GstVerifierService
+from services.metrics import decision_confidence, loan_applications_total
 from worker.celery_app import celery_app
 
 
@@ -116,15 +118,48 @@ async def _process_application(application_id: str) -> dict[str, Any]:
 def _claim_application(application_id: str) -> dict[str, Any]:
     app_uuid = UUID(application_id)
     with get_sync_session() as session:
-        application = session.execute(
-            select(LoanApplication)
+        stale_before = datetime.now(UTC) - timedelta(seconds=_processing_lock_timeout_seconds())
+        claim_statement = (
+            update(LoanApplication)
             .where(LoanApplication.id == app_uuid)
-            .with_for_update()
+            .where(
+                or_(
+                    LoanApplication.status == "PENDING",
+                    and_(
+                        LoanApplication.status == "PROCESSING",
+                        LoanApplication.updated_at < stale_before,
+                    ),
+                )
+            )
+            .values(status="PROCESSING", updated_at=datetime.now(UTC))
+            .returning(LoanApplication.id)
+        )
+        claimed_id = session.execute(claim_statement).scalar_one_or_none()
+
+        application = session.execute(
+            select(LoanApplication).where(LoanApplication.id == app_uuid)
         ).scalar_one()
 
-        if application.status in {"COMPLETED", "MANUAL_REVIEW"}:
+        if claimed_id is None:
+            if application.status in {"COMPLETED", "MANUAL_REVIEW"}:
+                logger.info(
+                    "application_already_claimed_or_processed",
+                    application_id=application_id,
+                    step="IDEMPOTENCY_GATE",
+                    status=application.status,
+                )
+                return {
+                    "terminal_or_locked": True,
+                    "response": {
+                        "application_id": str(application.id),
+                        "status": application.status,
+                        "decision": application.decision,
+                        "confidence": float(application.confidence) if application.confidence is not None else None,
+                    },
+                }
+
             logger.info(
-                "application_already_claimed_or_processed",
+                "application_claimed_by_another_worker",
                 application_id=application_id,
                 step="IDEMPOTENCY_GATE",
                 status=application.status,
@@ -134,12 +169,10 @@ def _claim_application(application_id: str) -> dict[str, Any]:
                 "response": {
                     "application_id": str(application.id),
                     "status": application.status,
-                    "decision": application.decision,
-                    "confidence": float(application.confidence) if application.confidence is not None else None,
+                    "message": "Being processed by another worker",
                 },
             }
 
-        application.status = "PROCESSING"
         write_audit_entry(
             application_id=application.id,
             step="PROCESSING_STARTED",
@@ -149,12 +182,12 @@ def _claim_application(application_id: str) -> dict[str, Any]:
         )
 
         return {
-                "terminal_or_locked": False,
-                "id": application.id,
-                "user_data": _load_application_user_data(application),
-                "pan_hash": application.pan_hash,
-                "failure_flags": dict(application.failure_flags or {}),
-            }
+            "terminal_or_locked": False,
+            "id": application.id,
+            "user_data": _load_application_user_data(application),
+            "pan_hash": application.pan_hash,
+            "failure_flags": dict(application.failure_flags or {}),
+        }
 
 
 async def _fetch_external_data(
@@ -221,6 +254,8 @@ def _store_processing_results(
         application.status = status
         application.decision = decision_output.decision.value
         application.confidence = Decimal(str(decision_output.confidence))
+        loan_applications_total.labels(status=status).inc()
+        decision_confidence.observe(decision_output.confidence)
 
         write_audit_entry(
             application_id=application_id,
@@ -292,6 +327,7 @@ def _mark_manual_review_after_system_error(application_id: str, exc: Exception, 
             return
         application.status = "MANUAL_REVIEW"
         application.decision = Decision.NEEDS_REVIEW.value
+        loan_applications_total.labels(status="MANUAL_REVIEW").inc()
         write_audit_entry(
             application_id=application.id,
             step=error_type,
@@ -342,3 +378,7 @@ def _decision_user_data(user_data: dict[str, Any], pan_hash: str | None) -> dict
     if pan_hash is not None:
         safe_user_data["pan_hash"] = pan_hash
     return safe_user_data
+
+
+def _processing_lock_timeout_seconds() -> int:
+    return int(os.getenv("PROCESSING_LOCK_TIMEOUT_SECONDS", "300"))
