@@ -35,6 +35,8 @@ async def get_decision(
         application_id=str(application.id),
         decision=application.decision,
         confidence=float(application.confidence) if application.confidence is not None else None,
+        data_reliability=decision_output.get("data_reliability"),
+        risk_score=decision_output.get("risk_score"),
         factors=decision_output.get("factors", []),
         rule_version=decision_output.get("rule_version"),
     )

@@ -2,8 +2,9 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from engine.confidence import compute_confidence
+from engine.confidence import compute_data_reliability, compute_decision_confidence
 from engine.rules import Decision, evaluate
+from engine.scoring import compute_risk_score
 from services import FailureType, ServiceResult
 
 
@@ -11,6 +12,8 @@ from services import FailureType, ServiceResult
 class DecisionOutput:
     decision: Decision
     confidence: float
+    data_reliability: float
+    risk_score: float
     factors: list[str]
     penalty_reasons: list[str]
     rule_version: str
@@ -31,7 +34,7 @@ def compute_decision(
     rule_version: str = "RULE_SET_V1",
 ) -> DecisionOutput:
     """
-    Orchestrates extraction, rules, confidence degradation, and manual review override.
+    Orchestrates extraction, risk scoring, calibrated confidence, and manual review override.
     This function is deterministic and side-effect free.
     """
     monthly_income = float(user_data["monthly_income"])
@@ -43,23 +46,36 @@ def compute_decision(
     gst_compliant = _extract_gst_compliance(gst_result)
 
     failure_types = _collect_failure_types(credit_result, bank_result, gst_result)
-    used_fallback_credit = credit_result.fallback_used and credit_score == 600
+    used_fallback_credit = (
+        credit_result.fallback_used
+        and credit_result.failure_type in {FailureType.TIMEOUT, FailureType.SERVICE_DOWN}
+    )
 
-    source_overrides = {
-        "credit_score": "fallback" if used_fallback_credit else "live",
-        "income_stability": _bank_source(bank_result),
-        "gst_compliant": _gst_source(gst_result),
-    }
-
-    decision, factors = evaluate(
+    risk_score, score_breakdown = compute_risk_score(
         credit_score,
         income_stability,
         dti,
         gst_compliant,
         failure_types,
-        source_overrides=source_overrides,
     )
-    confidence, penalty_reasons = compute_confidence(failure_types, used_fallback_credit)
+
+    decision, factors = evaluate(
+        risk_score,
+        credit_score,
+        dti,
+        failure_types,
+        gst_compliant,
+    )
+    factors = score_breakdown + factors
+
+    data_reliability, penalty_reasons = compute_data_reliability(failure_types, used_fallback_credit)
+    confidence, confidence_reasons = compute_decision_confidence(
+        risk_score,
+        decision,
+        data_reliability,
+        failure_types,
+    )
+    penalty_reasons.extend(confidence_reasons)
 
     requires_manual_review = confidence < confidence_threshold
     if requires_manual_review:
@@ -69,6 +85,8 @@ def compute_decision(
     return DecisionOutput(
         decision=decision,
         confidence=confidence,
+        data_reliability=data_reliability,
+        risk_score=risk_score,
         factors=factors,
         penalty_reasons=penalty_reasons,
         rule_version=rule_version,
@@ -97,32 +115,20 @@ def _collect_failure_types(*results: ServiceResult) -> list[FailureType]:
 
 
 def _extract_credit_score(result: ServiceResult) -> int | None:
+    if result.fallback_used and result.failure_type in {FailureType.TIMEOUT, FailureType.SERVICE_DOWN}:
+        return None
     if result.data and "credit_score" in result.data:
         return int(result.data["credit_score"])
-    return 600 if result.fallback_used else None
+    return None
 
 
 def _extract_income_stability(result: ServiceResult) -> float | None:
     if result.data and "income_stability" in result.data:
         return float(result.data["income_stability"])
-    return 0.5 if result.failure_type in {FailureType.PARTIAL_DATA, FailureType.FORMAT_ERROR} else None
+    return None
 
 
 def _extract_gst_compliance(result: ServiceResult) -> bool | None:
     if result.data and "gst_compliant" in result.data:
         return bool(result.data["gst_compliant"])
     return False if result.failure_type in {FailureType.PAN_MISMATCH, FailureType.NO_RECORD} else None
-
-
-def _bank_source(result: ServiceResult) -> str:
-    if result.failure_type == FailureType.PARTIAL_DATA:
-        return "partial"
-    if result.fallback_used or result.failure_type == FailureType.FORMAT_ERROR:
-        return "default"
-    return "live"
-
-
-def _gst_source(result: ServiceResult) -> str:
-    if result.failure_type in {FailureType.PAN_MISMATCH, FailureType.NO_RECORD}:
-        return "fallback"
-    return "live"

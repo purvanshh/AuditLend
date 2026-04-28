@@ -5,46 +5,46 @@ from services import FailureType
 
 
 @pytest.mark.parametrize(
-    ("credit_score", "income_stability", "dti", "gst", "failures", "expected"),
+    ("risk_score", "credit_score", "dti", "failures", "gst", "expected"),
     [
-        (800, 0.9, 0.2, True, [], Decision.APPROVE),
-        (750, 0.7, 0.39, True, [], Decision.APPROVE),
-        (700, 0.6, 0.45, True, [], Decision.APPROVE),
-        (650, 0.5, 0.49, True, [], Decision.APPROVE),
-        (749, 0.7, 0.39, True, [], Decision.APPROVE),
-        (800, 0.69, 0.3, True, [], Decision.APPROVE),
-        (800, 0.9, 0.4, True, [], Decision.APPROVE),
-        (550, 0.8, 0.3, True, [], Decision.DECLINE),
-        (750, 0.8, 0.7, True, [], Decision.DECLINE),
-        (599, 0.8, 0.2, True, [], Decision.DECLINE),
-        (600, 0.8, 0.6, True, [], Decision.DECLINE),
-        (601, 0.8, 0.59, True, [], Decision.NEEDS_REVIEW),
-        (None, 0.9, 0.2, True, [], Decision.NEEDS_REVIEW),
-        (700, None, 0.3, True, [], Decision.APPROVE),
-        (None, None, 0.7, None, [], Decision.DECLINE),
-        (800, 0.9, 0.2, True, [FailureType.STALE_DATA], Decision.APPROVE),
-        (800, 0.4, 0.2, True, [], Decision.NEEDS_REVIEW),
-        (640, 0.9, 0.2, True, [], Decision.NEEDS_REVIEW),
-        (700, 0.6, 0.5, True, [], Decision.NEEDS_REVIEW),
-        (900, 1.0, 0.0, False, [], Decision.APPROVE),
+        (80, 800, 0.2, [], True, Decision.APPROVE),
+        (70, 750, 0.49, [], True, Decision.APPROVE),
+        (69, 700, 0.49, [], True, Decision.APPROVE),
+        (55, 650, 0.49, [], True, Decision.APPROVE),
+        (55, 650, 0.50, [], True, Decision.NEEDS_REVIEW),
+        (34.99, 500, 0.2, [], True, Decision.DECLINE),
+        (40, 700, 0.61, [], True, Decision.DECLINE),
+        (35, 700, 0.60, [], True, Decision.NEEDS_REVIEW),
+        (54.99, 650, 0.2, [], True, Decision.NEEDS_REVIEW),
+        (80, 800, 0.2, [FailureType.STALE_DATA], True, Decision.APPROVE),
+        (100, 900, 0.0, [], False, Decision.NEEDS_REVIEW),
+        (30, 300, 0.2, [], False, Decision.DECLINE),
+        (55, None, 0.49, [], None, Decision.APPROVE),
     ],
 )
 def test_rule_matrix(
+    risk_score: float,
     credit_score: int | None,
-    income_stability: float | None,
     dti: float,
-    gst: bool | None,
     failures: list[FailureType],
+    gst: bool | None,
     expected: Decision,
 ) -> None:
-    decision, factors = evaluate(credit_score, income_stability, dti, gst, failures)
+    decision, factors = evaluate(risk_score, credit_score, dti, failures, gst)
 
     assert decision == expected
-    assert any(factor.startswith("credit_score") for factor in factors)
+    assert any(factor.startswith("risk_score") for factor in factors)
     assert any(factor.startswith("dti") for factor in factors)
 
 
 def test_factor_strings_include_failure_types() -> None:
-    _, factors = evaluate(700, 0.6, 0.3, True, [FailureType.TIMEOUT, FailureType.PARTIAL_DATA])
+    _, factors = evaluate(70, 700, 0.3, [FailureType.TIMEOUT, FailureType.PARTIAL_DATA], True)
 
     assert "data_reliability_flags = TIMEOUT, PARTIAL_DATA" in factors
+
+
+def test_gst_non_compliance_blocks_approval_even_with_perfect_score() -> None:
+    decision, factors = evaluate(100, 900, 0.0, [], False)
+
+    assert decision == Decision.NEEDS_REVIEW
+    assert "gst_gate (applied) = risk_score capped at 54.00" in factors

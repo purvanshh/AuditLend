@@ -10,52 +10,29 @@ class Decision(StrEnum):
     NEEDS_REVIEW = "NEEDS_REVIEW"
 
 
-def _coerce_credit_score(credit_score: int | None) -> tuple[int, str]:
-    if credit_score is None:
-        return 600, "default"
-    return credit_score, "live"
-
-
-def _coerce_income_stability(income_stability: float | None) -> tuple[float, str]:
-    if income_stability is None:
-        return 0.5, "default"
-    return income_stability, "live"
-
-
-def _coerce_gst_compliance(gst_compliant: bool | None) -> tuple[bool, str]:
-    if gst_compliant is None:
-        return False, "default"
-    return gst_compliant, "live"
-
-
 def evaluate(
+    risk_score: float,
     credit_score: int | None,
-    income_stability: float | None,
     dti: float,
-    gst_compliant: bool | None,
     failure_types: list[FailureType],
-    source_overrides: dict[str, str] | None = None,
+    gst_compliant: bool | None,
 ) -> tuple[Decision, list[str]]:
     """
-    Pure function. Evaluates rules in priority order.
+    Pure function. Evaluates score-based rules in priority order.
     First matching rule wins.
     Returns (decision, list of factor strings for audit/explanation).
     """
-    score, score_source = _coerce_credit_score(credit_score)
-    stability, stability_source = _coerce_income_stability(income_stability)
-    gst, gst_source = _coerce_gst_compliance(gst_compliant)
-    sources = source_overrides or {}
-
-    score_source = sources.get("credit_score", score_source)
-    stability_source = sources.get("income_stability", stability_source)
-    gst_source = sources.get("gst_compliant", gst_source)
+    effective_risk_score = min(risk_score, 54.0) if gst_compliant is False else risk_score
 
     factors = [
-        f"credit_score ({score_source}) = {score}",
-        f"income_stability ({stability_source}) = {stability}",
+        f"risk_score (raw) = {risk_score:.2f}",
+        f"credit_score (decision_input) = {_display_value(credit_score)}",
         f"dti (computed) = {dti:.2f}",
-        f"gst_compliant ({gst_source}) = {gst}",
+        f"gst_compliant (decision_input) = {_display_value(gst_compliant)}",
     ]
+    if effective_risk_score != risk_score:
+        factors.append(f"gst_gate (applied) = risk_score capped at {effective_risk_score:.2f}")
+    factors.append(f"risk_score (effective) = {effective_risk_score:.2f}")
 
     if failure_types:
         failures = ", ".join(failure.value for failure in failure_types)
@@ -63,37 +40,41 @@ def evaluate(
     else:
         factors.append("data_reliability_flags = none")
 
-    if score >= 750 and stability >= 0.7 and dti < 0.4 and len(failure_types) == 0:
-        factors.append("rule = Strong profile with all data sources verified")
+    if effective_risk_score >= 70 and len(failure_types) == 0:
+        factors.append("rule = Strong risk score with all data sources verified")
         return Decision.APPROVE, factors
 
-    if score >= 650 and stability >= 0.5 and dti < 0.5:
-        factors.append("rule = Moderate profile within acceptable risk thresholds")
+    if effective_risk_score >= 55 and dti < 0.5:
+        factors.append("rule = Moderate risk score within acceptable DTI")
         return Decision.APPROVE, factors
 
-    if score < 600 or dti >= 0.6:
-        factors.append("rule = Risk factors exceed thresholds")
+    if effective_risk_score < 35 or dti > 0.6:
+        factors.append("rule = Risk score or DTI exceeds decline threshold")
         return Decision.DECLINE, factors
 
-    factors.append("rule = Application requires manual assessment")
+    factors.append("rule = Risk profile requires manual assessment")
     return Decision.NEEDS_REVIEW, factors
+
+
+def _display_value(value: object | None) -> str:
+    return "unknown" if value is None else str(value)
 
 
 RULES: list[dict[str, Any]] = [
     {
         "decision": Decision.APPROVE,
-        "description": "Strong profile with all data sources verified",
+        "description": "Strong risk score with all data sources verified",
     },
     {
         "decision": Decision.APPROVE,
-        "description": "Moderate profile within acceptable risk thresholds",
+        "description": "Moderate risk score within acceptable DTI",
     },
     {
         "decision": Decision.DECLINE,
-        "description": "Risk factors exceed thresholds",
+        "description": "Risk score or DTI exceeds decline threshold",
     },
     {
         "decision": Decision.NEEDS_REVIEW,
-        "description": "Application requires manual assessment",
+        "description": "Risk profile requires manual assessment",
     },
 ]

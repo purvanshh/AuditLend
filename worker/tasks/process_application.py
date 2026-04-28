@@ -105,6 +105,8 @@ async def _process_application(application_id: str) -> dict[str, Any]:
         "status": _status_for_decision(decision_output),
         "decision": decision_output.decision.value,
         "confidence": decision_output.confidence,
+        "data_reliability": decision_output.data_reliability,
+        "risk_score": decision_output.risk_score,
         "rule_version": decision_output.rule_version,
     }
 
