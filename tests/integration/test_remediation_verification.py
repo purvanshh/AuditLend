@@ -96,7 +96,7 @@ def test_full_remediated_pipeline(api_client, clean_database, sample_apply_paylo
         pii_row = connection.execute(
             text(
                 "SELECT pan_hash, encrypted_user_data IS NOT NULL AS has_ciphertext, "
-                "encryption_nonce IS NOT NULL AS has_nonce, user_data "
+                "encryption_nonce IS NOT NULL AS has_nonce "
                 "FROM loan_applications WHERE id = :id"
             ),
             {"id": application_id},
@@ -124,10 +124,11 @@ def test_full_remediated_pipeline(api_client, clean_database, sample_apply_paylo
     assert len(pii_row.pan_hash) == 64
     assert pii_row.has_ciphertext is True
     assert pii_row.has_nonce is True
-    assert pii_row.user_data is None
     assert audit_count >= 5
     assert raw_pan not in audit_text
     assert raw_pan not in external_text
+    assert str(payload["user_data"]["monthly_income"]) not in audit_text
+    assert str(payload["user_data"]["loan_amount"]) not in audit_text
 
     metrics = generate_latest().decode("utf-8")
     assert "auditlend_applications_total" in metrics

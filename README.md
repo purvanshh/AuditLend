@@ -597,8 +597,8 @@ curl "http://localhost:8003/verify-gst?pan=AAAAA1111F&fail_mode=NO_RECORD"
 | `GST_VERIFIER_URL` | GST verifier service base URL | `http://gst-verifier:8003` |
 | `CONFIDENCE_THRESHOLD` | Below this value, force manual review | `0.6` |
 | `RULE_SET_VERSION` | Active rule version recorded in audit logs | `RULE_SET_V1` |
-| `PII_ENCRYPTION_KEY` | Hex-encoded AES-GCM key for encrypted user data | dev-only zero key |
-| `PAN_HASH_SALT` | Salt used for SHA-256 PAN hashing | `auditlend-dev-salt` |
+| `PII_ENCRYPTION_KEY` | Required 64-character hex AES-256-GCM key; insecure defaults are rejected at startup | `${PII_ENCRYPTION_KEY}` |
+| `PAN_HASH_SALT` | Required per-environment salt used for SHA-256 PAN hashing; insecure defaults are rejected at startup | `${PAN_HASH_SALT}` |
 | `CIRCUIT_BREAKER_THRESHOLD` | Failures before opening service circuit | `5` |
 | `CIRCUIT_BREAKER_WINDOW_SECONDS` | Failure counting window | `60` |
 | `CIRCUIT_BREAKER_TIMEOUT_SECONDS` | Open circuit cooldown | `120` |

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from models.application import LoanApplication
 from models.audit_log import AuditLog
 from services.audit import write_audit_entry
+from tests.conftest import encrypted_application_fields
 
 
 def test_audit_log_entries_capture_each_step_with_snapshots(clean_database) -> None:
@@ -16,7 +17,9 @@ def test_audit_log_entries_capture_each_step_with_snapshots(clean_database) -> N
             LoanApplication(
                 id=application_id,
                 idempotency_key="audit-001",
-                user_data={"pan": "ABCDE1234F", "monthly_income": 120000, "existing_emis": 25000},
+                **encrypted_application_fields(
+                    {"pan": "ABCDE1234F", "monthly_income": 120000, "existing_emis": 25000}
+                ),
                 status="COMPLETED",
                 decision="APPROVE",
                 confidence=Decimal("1.00"),
@@ -65,7 +68,9 @@ def test_explanation_endpoint_reads_from_audit_trail(api_client, clean_database)
             LoanApplication(
                 id=application_id,
                 idempotency_key="explain-001",
-                user_data={"pan": "ABCDE1234F", "monthly_income": 120000, "existing_emis": 25000},
+                **encrypted_application_fields(
+                    {"pan": "ABCDE1234F", "monthly_income": 120000, "existing_emis": 25000}
+                ),
                 status="MANUAL_REVIEW",
                 decision="NEEDS_REVIEW",
                 confidence=Decimal("0.50"),

@@ -126,6 +126,7 @@ cython_debug/
 
 # Docker
 .docker/
+docker-compose.override.yml
 
 # IDEs
 .idea/

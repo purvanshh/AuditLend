@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from models.application import LoanApplication
 from services import ServiceResult
+from tests.conftest import encrypted_application_fields
 from worker.tasks import process_application as task_module
 
 
@@ -22,7 +23,7 @@ def test_worker_redelivery_recovers_processing_application(monkeypatch, clean_da
             LoanApplication(
                 id=application_id,
                 idempotency_key="worker-crash-recovery",
-                user_data=sample_user_data,
+                **encrypted_application_fields(sample_user_data),
                 failure_flags={},
                 status="PROCESSING",
                 updated_at=datetime.now(UTC) - timedelta(seconds=600),

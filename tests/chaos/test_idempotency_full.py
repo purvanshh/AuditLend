@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from models.application import LoanApplication
+from tests.conftest import encrypted_application_fields
 from worker.tasks import process_application as task_module
 
 
@@ -16,7 +17,7 @@ def _insert_application(engine, user_data, status="PENDING") -> str:
             LoanApplication(
                 id=application_id,
                 idempotency_key=f"full-idem-{application_id}",
-                user_data=user_data,
+                **encrypted_application_fields(user_data),
                 failure_flags={},
                 status=status,
                 updated_at=(

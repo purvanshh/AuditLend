@@ -26,7 +26,7 @@ def test_apply_loan_encrypts_user_data_and_hashes_pan(api_client, clean_database
         row = connection.execute(
             text(
                 "SELECT pan_hash, encrypted_user_data IS NOT NULL AS has_ciphertext, "
-                "encryption_nonce IS NOT NULL AS has_nonce, user_data "
+                "encryption_nonce IS NOT NULL AS has_nonce "
                 "FROM loan_applications WHERE id = :id"
             ),
             {"id": response.json()["application_id"]},
@@ -36,7 +36,6 @@ def test_apply_loan_encrypts_user_data_and_hashes_pan(api_client, clean_database
     assert len(row.pan_hash) == 64
     assert row.has_ciphertext is True
     assert row.has_nonce is True
-    assert row.user_data is None
 
 
 def test_apply_loan_rejects_same_key_with_different_payload(api_client, sample_apply_payload) -> None:

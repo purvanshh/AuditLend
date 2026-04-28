@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from models.application import LoanApplication
 from services import FailureType, ServiceResult
+from tests.conftest import encrypted_application_fields
 from worker.tasks import process_application as task_module
 
 
@@ -21,7 +22,7 @@ def _insert_application(engine, user_data, failure_flags=None) -> str:
             LoanApplication(
                 id=application_id,
                 idempotency_key=f"pipeline-{application_id}",
-                user_data=user_data,
+                **encrypted_application_fields(user_data),
                 failure_flags=failure_flags or {},
                 status="PENDING",
             )

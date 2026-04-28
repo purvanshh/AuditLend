@@ -42,7 +42,7 @@ jobs:
       AUDITLEND_TEST_ASYNC_DATABASE_URL: postgresql+asyncpg://auditlend:auditlend@localhost:5432/auditlend_test
       AUDITLEND_TEST_REDIS_URL: redis://localhost:6379/0
       REDIS_URL: redis://localhost:6379/0
-      PII_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      PII_ENCRYPTION_KEY: "02468ace02468ace02468ace02468ace02468ace02468ace02468ace02468ace"
       PAN_HASH_SALT: auditlend-ci-salt
 
     steps:

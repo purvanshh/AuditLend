@@ -23,10 +23,14 @@ TEST_REDIS_URL = os.getenv(
     "AUDITLEND_TEST_REDIS_URL",
     os.getenv("REDIS_URL", "redis://localhost:6379/0"),
 )
+TEST_PII_ENCRYPTION_KEY = "02468ace02468ace02468ace02468ace02468ace02468ace02468ace02468ace"
+TEST_PAN_HASH_SALT = "test-salt-for-ci"
 
 os.environ.setdefault("DATABASE_URL", TEST_DATABASE_URL)
 os.environ.setdefault("ASYNC_DATABASE_URL", TEST_ASYNC_DATABASE_URL)
 os.environ.setdefault("REDIS_URL", TEST_REDIS_URL)
+os.environ.setdefault("PII_ENCRYPTION_KEY", TEST_PII_ENCRYPTION_KEY)
+os.environ.setdefault("PAN_HASH_SALT", TEST_PAN_HASH_SALT)
 
 
 def _postgres_available() -> bool:
@@ -114,3 +118,15 @@ def _truncate_database(engine: Engine) -> None:
                 "loan_applications RESTART IDENTITY CASCADE"
             )
         )
+
+
+def encrypted_application_fields(user_data: dict[str, Any]) -> dict[str, Any]:
+    from services.crypto import pii_service_from_env
+
+    pii_service = pii_service_from_env()
+    encrypted_user_data, encryption_nonce = pii_service.encrypt(user_data)
+    return {
+        "pan_hash": pii_service.hash_pan(user_data["pan"]),
+        "encrypted_user_data": encrypted_user_data,
+        "encryption_nonce": encryption_nonce,
+    }

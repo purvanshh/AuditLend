@@ -16,10 +16,9 @@ class LoanApplication(Base):
         server_default=text("uuid_generate_v4()"),
     )
     idempotency_key = Column(String(255), nullable=False)
-    user_data = Column(JSONB, nullable=True)
-    pan_hash = Column(String(64), nullable=True)
-    encrypted_user_data = Column(LargeBinary, nullable=True)
-    encryption_nonce = Column(LargeBinary, nullable=True)
+    pan_hash = Column(String(64), nullable=False)
+    encrypted_user_data = Column(LargeBinary, nullable=False)
+    encryption_nonce = Column(LargeBinary, nullable=False)
     status = Column(String(20), nullable=False, default="PENDING", server_default=text("'PENDING'"))
     decision = Column(String(30), nullable=True)
     confidence = Column(Numeric(3, 2), nullable=True)

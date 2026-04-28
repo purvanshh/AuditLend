@@ -51,11 +51,10 @@ async def apply_loan(
 
     pii_service = pii_service_from_env()
     user_data = request.user_data.model_dump(mode="json")
-    encrypted_user_data, encryption_nonce = pii_service.encrypt_pii(user_data)
+    encrypted_user_data, encryption_nonce = pii_service.encrypt(user_data)
 
     application = LoanApplication(
         idempotency_key=key,
-        user_data=None,
         pan_hash=pii_service.hash_pan(request.user_data.pan),
         encrypted_user_data=encrypted_user_data,
         encryption_nonce=encryption_nonce,

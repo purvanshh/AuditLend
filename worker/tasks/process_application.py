@@ -15,7 +15,7 @@ from engine.rules import Decision
 from models.application import LoanApplication
 from models.external_data import ExternalData
 from services import FailureType, ServiceResult
-from services.audit import write_audit_entry
+from services.audit import audit_safe_features, write_audit_entry
 from services.bank_analyzer import BankAnalyzerService
 from services.credit_bureau import CreditBureauService
 from services.crypto import pii_service_from_env
@@ -96,7 +96,7 @@ async def _process_application(application_id: str) -> dict[str, Any]:
 
     _store_processing_results(
         app_id,
-        decision_user_data,
+        user_data,
         failure_flags,
         credit_result,
         bank_result,
@@ -223,7 +223,7 @@ async def _fetch_external_data(
 
 def _store_processing_results(
     application_id: UUID,
-    user_data: dict[str, Any],
+    audit_user_data: dict[str, Any],
     failure_flags: dict[str, Any],
     credit_result: ServiceResult,
     bank_result: ServiceResult,
@@ -261,7 +261,10 @@ def _store_processing_results(
             application_id=application_id,
             step="DECISION_CALCULATION",
             input_snapshot={
-                "user_data": _redact_user_data(user_data),
+                "features": audit_safe_features(
+                    audit_user_data,
+                    _risk_score_audit_breakdown(audit_user_data, decision_output, credit_result, bank_result, gst_result),
+                ),
                 "failure_flags": failure_flags,
             },
             output_snapshot=decision_output.to_dict(),
@@ -357,24 +360,41 @@ def _failure_flag(failure_flags: dict[str, Any], key: str) -> FailureType | None
 def _redact_user_data(user_data: dict[str, Any]) -> dict[str, Any]:
     if user_data is None:
         return {}
-    redacted = dict(user_data)
-    if "pan" in redacted:
-        redacted["pan"] = "***REDACTED***"
+    redacted: dict[str, Any] = {}
+    for key, value in user_data.items():
+        if key in {"pan", "name", "pan_hash"}:
+            redacted[key] = "***REDACTED***"
+        elif key in {"monthly_income", "monthly_inflow"}:
+            redacted[key] = "***REDACTED***"
+        elif key == "existing_emis":
+            redacted[key] = "***REDACTED***"
+        elif key in {"loan_amount", "monthly_outflow", "average_balance", "annual_turnover"}:
+            redacted[key] = "***REDACTED***"
+        elif key == "bank_statement":
+            redacted[key] = "***REDACTED***"
+        elif isinstance(value, dict):
+            redacted[key] = _redact_user_data(value)
+        elif isinstance(value, list):
+            redacted[key] = [_redact_user_data(item) if isinstance(item, dict) else item for item in value]
+        else:
+            redacted[key] = value
     return redacted
 
 
 def _load_application_user_data(application: LoanApplication) -> dict[str, Any]:
-    if application.encrypted_user_data is not None and application.encryption_nonce is not None:
-        return pii_service_from_env().decrypt_pii(
-            bytes(application.encrypted_user_data),
-            bytes(application.encryption_nonce),
-        )
-    return dict(application.user_data or {})
+    if application.encrypted_user_data is None or application.encryption_nonce is None:
+        raise RuntimeError("Application is missing encrypted user data")
+    return pii_service_from_env().decrypt(
+        bytes(application.encrypted_user_data),
+        bytes(application.encryption_nonce),
+    )
 
 
 def _decision_user_data(user_data: dict[str, Any], pan_hash: str | None) -> dict[str, Any]:
-    safe_user_data = dict(user_data)
-    safe_user_data.pop("pan", None)
+    safe_user_data = {
+        "monthly_income": user_data["monthly_income"],
+        "existing_emis": user_data.get("existing_emis", 0),
+    }
     if pan_hash is not None:
         safe_user_data["pan_hash"] = pan_hash
     return safe_user_data
@@ -382,3 +402,29 @@ def _decision_user_data(user_data: dict[str, Any], pan_hash: str | None) -> dict
 
 def _processing_lock_timeout_seconds() -> int:
     return int(os.getenv("PROCESSING_LOCK_TIMEOUT_SECONDS", "300"))
+
+
+def _risk_score_audit_breakdown(
+    user_data: dict[str, Any],
+    decision_output: DecisionOutput,
+    credit_result: ServiceResult,
+    bank_result: ServiceResult,
+    gst_result: ServiceResult,
+) -> dict[str, Any]:
+    monthly_income = float(user_data.get("monthly_income") or 0)
+    existing_emis = float(user_data.get("existing_emis") or 0)
+    dti = round(existing_emis / monthly_income, 4) if monthly_income > 0 else None
+    failure_types = [
+        result.failure_type.value
+        for result in (credit_result, bank_result, gst_result)
+        if result.failure_type is not None
+    ]
+    return {
+        "dti": dti,
+        "components": {
+            "risk_score": decision_output.risk_score,
+            "confidence": decision_output.confidence,
+            "data_reliability": decision_output.data_reliability,
+        },
+        "failure_types": failure_types,
+    }
