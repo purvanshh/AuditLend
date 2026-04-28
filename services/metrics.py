@@ -31,6 +31,18 @@ decision_confidence = Histogram(
     buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
 )
 
+task_duration = Histogram(
+    "auditlend_task_duration_seconds",
+    "Celery task duration",
+    ["task_name"],
+)
+
+task_failures = Counter(
+    "auditlend_task_failures_total",
+    "Celery task failures",
+    ["task_name", "error_type"],
+)
+
 
 def circuit_state_value(state: str) -> int:
     return {

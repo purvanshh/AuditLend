@@ -1,4 +1,5 @@
 import hashlib
+import json
 import time
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -10,7 +11,9 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from services.logging import setup_logging
 
+setup_logging()
 app = FastAPI(title="AuditLend Credit Bureau Mock")
 logger = structlog.get_logger()
 
@@ -31,8 +34,8 @@ def _pan_hash(pan: str) -> str:
 
 
 def _request_id(pan: str, fail_mode: CreditFailMode) -> str:
-    hour_bucket = datetime.now(UTC).strftime("%Y%m%d%H")
-    return hashlib.sha256(f"{pan}:{fail_mode.value}:{hour_bucket}".encode("utf-8")).hexdigest()[:12]
+    payload = json.dumps({"pan": pan, "fail_mode": fail_mode.value}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def _credit_score(pan: str) -> int:

@@ -3,6 +3,7 @@ from collections.abc import Awaitable, Callable
 import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from time import monotonic
 from typing import Any
 from uuid import UUID
 
@@ -21,7 +22,7 @@ from services.bank_analyzer import BankAnalyzerService
 from services.credit_bureau import CreditBureauService
 from services.crypto import pii_service_from_env
 from services.gst_verifier import GstVerifierService
-from services.metrics import decision_confidence, loan_applications_total
+from services.metrics import decision_confidence, loan_applications_total, task_duration, task_failures
 from worker.celery_app import celery_app
 
 
@@ -34,10 +35,13 @@ def process_application(self, application_id: str) -> dict[str, Any]:
     Main async task. Processes a loan application end-to-end.
     IDEMPOTENT: If application is already terminal or processing, returns stored state.
     """
+    started_at = monotonic()
+    task_name = "process_application"
     try:
         timeout_seconds = int(os.getenv("TASK_TIMEOUT_SECONDS", "60"))
         return asyncio.run(asyncio.wait_for(_process_application(application_id), timeout=timeout_seconds))
     except TimeoutError as exc:
+        task_failures.labels(task_name=task_name, error_type="PIPELINE_TIMEOUT").inc()
         logger.exception(
             "process_application_timeout",
             application_id=application_id,
@@ -52,6 +56,7 @@ def process_application(self, application_id: str) -> dict[str, Any]:
             "error_type": "PIPELINE_TIMEOUT",
         }
     except Exception as exc:
+        task_failures.labels(task_name=task_name, error_type="SYSTEM_ERROR").inc()
         logger.exception(
             "process_application_unhandled_error",
             application_id=application_id,
@@ -65,6 +70,8 @@ def process_application(self, application_id: str) -> dict[str, Any]:
             "decision": Decision.NEEDS_REVIEW.value,
             "error_type": "SYSTEM_ERROR",
         }
+    finally:
+        task_duration.labels(task_name=task_name).observe(monotonic() - started_at)
 
 
 async def _process_application(application_id: str) -> dict[str, Any]:

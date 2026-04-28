@@ -65,6 +65,14 @@ def client_for(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://mock")
 
 
+def test_external_api_timeout_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EXTERNAL_API_TIMEOUT_SECONDS", "12.5")
+
+    service = CreditBureauService(base_url="http://mock")
+
+    assert service.timeout == 12.5
+
+
 @pytest.mark.asyncio
 async def test_credit_timeout_retries_then_uses_conservative_fallback() -> None:
     attempts = 0

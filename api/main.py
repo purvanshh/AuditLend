@@ -12,17 +12,19 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.routes import applications, decisions, explanations
+from services.logging import setup_logging
 
 
-structlog.configure(
-    processors=[
-        structlog.processors.TimeStamper(fmt="iso", utc=True),
-        structlog.processors.add_log_level,
-        structlog.processors.JSONRenderer(),
-    ],
-)
+setup_logging()
 
 logger = structlog.get_logger()
+
+
+def validate_required_env() -> None:
+    required_vars = ["PII_ENCRYPTION_KEY", "PAN_HASH_SALT", "API_KEYS", "DATABASE_URL", "REDIS_URL"]
+    missing = [var for var in required_vars if not os.environ.get(var)]
+    if missing:
+        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
 
 def cors_allowed_origins() -> list[str]:
@@ -43,6 +45,7 @@ def configure_cors(target_app: FastAPI) -> None:
     )
 
 
+validate_required_env()
 app = FastAPI(title="AuditLend API", version="2.0.0")
 configure_cors(app)
 
@@ -128,4 +131,3 @@ def _title_for_status(status_code: int) -> str:
     if status_code == 202:
         return "Accepted"
     return "Request Error"
-

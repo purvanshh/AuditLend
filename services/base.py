@@ -35,6 +35,7 @@ class BaseExternalService:
         self.service_name = service_name
         self.redis = redis_client
         self.http_client = http_client
+        self.timeout = float(os.getenv("EXTERNAL_API_TIMEOUT_SECONDS", "30.0"))
         self.logger = structlog.get_logger().bind(service=service_name)
 
     async def call(
@@ -159,7 +160,7 @@ class BaseExternalService:
 
         started_at = monotonic()
         try:
-            client = self.http_client or httpx.AsyncClient(timeout=10.0)
+            client = self.http_client or httpx.AsyncClient(timeout=self.timeout)
             close_client = self.http_client is None
             try:
                 response = await client.request(

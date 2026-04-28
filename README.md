@@ -2,7 +2,11 @@
 
 Every decision, explained. Every failure, handled. Every step, audited.
 
-AuditLend is a production-grade reference implementation of a credit decision engine. It processes loan applications asynchronously, handles deterministic external-data failures, computes a weighted risk score, separates data reliability from calibrated decision confidence, protects PII at rest, stores immutable audit logs, exposes Prometheus metrics, and returns borrower- or reviewer-friendly explanations for every decision.
+AuditLend is a production-readiness reference implementation of a credit decision engine. It processes loan applications asynchronously, handles deterministic external-data failures, computes a governed weighted risk score, separates data reliability from calibrated decision confidence, protects PII at rest, stores immutable audit logs, exposes Prometheus metrics, and returns borrower- or reviewer-friendly explanations for every decision.
+
+## Production Readiness Status
+
+This repository is being hardened against the production readiness audit checklist tracked in this remediation sprint. The current implementation includes API key authentication, AES-256-GCM PII encryption, salted PAN hashing, transactional outbox delivery, immutable rule-set governance, Prometheus metrics, deterministic mocks, and database-level audit mutation protection.
 
 ## Quick Start
 
@@ -604,10 +608,14 @@ curl "http://localhost:8003/verify-gst?pan=AAAAA1111F&fail_mode=NO_RECORD"
 | `CIRCUIT_BREAKER_THRESHOLD` | Failures before opening service circuit | `5` |
 | `CIRCUIT_BREAKER_WINDOW_SECONDS` | Failure counting window | `60` |
 | `CIRCUIT_BREAKER_TIMEOUT_SECONDS` | Open circuit cooldown | `120` |
+| `CIRCUIT_BREAKER_PROBE_LOCK_SECONDS` | Half-open single-probe lock TTL | `10` |
 | `MAX_RETRIES` | Per-service retry count | `3` |
 | `RETRY_BACKOFF_BASE_SECONDS` | Exponential backoff base | `2` |
+| `EXTERNAL_API_TIMEOUT_SECONDS` | Per-call HTTP timeout for external service adapters | `30.0` |
 | `TASK_TIMEOUT_SECONDS` | Worker processing watchdog | `60` |
 | `PROCESSING_LOCK_TIMEOUT_SECONDS` | Age after which stuck PROCESSING apps can be reclaimed | `300` |
+| `OUTBOX_POLL_INTERVAL_SECONDS` | Worker outbox poll cadence | `1.0` |
+| `WORKER_HEALTH_PORT` | Worker HTTP health endpoint port | `8004` |
 | `LOG_LEVEL` | Runtime logging level | `INFO` |
 
 ## Testing

@@ -6,6 +6,7 @@ from prometheus_client import generate_latest
 from api.main import app
 from services import FailureType
 from services.credit_bureau import CreditBureauService
+from services.metrics import task_duration, task_failures
 
 
 def test_metrics_endpoint_exposes_auditlend_metrics() -> None:
@@ -33,3 +34,12 @@ async def test_external_service_metrics_increment_after_failed_call(monkeypatch)
 
     metrics = generate_latest().decode("utf-8")
     assert 'auditlend_external_api_requests_total{service="credit_bureau",status="TIMEOUT"}' in metrics
+
+
+def test_task_metrics_are_exported() -> None:
+    task_duration.labels(task_name="process_application").observe(0.1)
+    task_failures.labels(task_name="process_application", error_type="SYSTEM_ERROR").inc()
+
+    metrics = generate_latest().decode("utf-8")
+    assert "auditlend_task_duration_seconds" in metrics
+    assert 'auditlend_task_failures_total{error_type="SYSTEM_ERROR",task_name="process_application"}' in metrics

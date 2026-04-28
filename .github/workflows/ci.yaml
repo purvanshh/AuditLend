@@ -45,6 +45,8 @@ jobs:
       PII_ENCRYPTION_KEY: "02468ace02468ace02468ace02468ace02468ace02468ace02468ace02468ace"
       PAN_HASH_SALT: auditlend-ci-salt
       API_KEYS: test-api-key-for-ci:read-write
+      CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:8000
+      EXTERNAL_API_TIMEOUT_SECONDS: "30.0"
 
     steps:
       - uses: actions/checkout@v4
@@ -60,7 +62,13 @@ jobs:
         run: alembic upgrade head
 
       - name: Run tests
-        run: pytest tests/ -v --cov=. --cov-report=xml
+        run: |
+          set -o pipefail
+          pytest tests/ -v -r s --cov=. --cov-report=xml --cov-fail-under=85 | tee pytest-output.txt
+          if grep -q "SKIPPED" pytest-output.txt; then
+            echo "CI must run with zero skipped tests"
+            exit 1
+          fi
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4

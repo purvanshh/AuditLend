@@ -1,5 +1,5 @@
 import hashlib
-from datetime import UTC, datetime
+import json
 from enum import StrEnum
 from time import perf_counter
 
@@ -10,7 +10,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from services.logging import setup_logging
 
+setup_logging()
 app = FastAPI(title="AuditLend Bank Analyzer Mock")
 logger = structlog.get_logger()
 
@@ -35,8 +37,8 @@ def _seed(pan: str) -> int:
 
 
 def _request_id(pan: str, fail_mode: BankFailMode) -> str:
-    hour_bucket = datetime.now(UTC).strftime("%Y%m%d%H")
-    return hashlib.sha256(f"{pan}:{fail_mode.value}:{hour_bucket}".encode("utf-8")).hexdigest()[:12]
+    payload = json.dumps({"pan": pan, "fail_mode": fail_mode.value}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
 def _analysis(pan: str, fail_mode: BankFailMode) -> dict[str, str | int | float]:
