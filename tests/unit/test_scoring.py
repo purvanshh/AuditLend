@@ -1,5 +1,4 @@
-import pytest
-
+from engine.rule_sets import RuleSet
 from engine.scoring import compute_risk_score
 from services import FailureType
 
@@ -99,12 +98,24 @@ def test_income_stability_component_clamps_above_one() -> None:
     assert "income_stability_component (live) = 20.00/20.00 (income_stability=1.20)" in factors
 
 
-def test_weights_are_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RISK_WEIGHT_CREDIT", "50")
-    monkeypatch.setenv("RISK_WEIGHT_INCOME_STABILITY", "10")
-    monkeypatch.setenv("RISK_WEIGHT_DTI", "25")
-    monkeypatch.setenv("RISK_WEIGHT_GST", "15")
+def test_weights_are_configurable_by_rule_set() -> None:
+    rule_set = RuleSet(
+        version="RULE_SET_TEST",
+        description="Test weights",
+        created_at="2026-04-29",
+        credit_weight=50.0,
+        stability_weight=10.0,
+        dti_weight=25.0,
+        gst_weight=15.0,
+        data_quality_penalty=5.0,
+        max_data_quality_penalty=15.0,
+        approve_high_threshold=70.0,
+        approve_moderate_threshold=55.0,
+        decline_threshold=35.0,
+        moderate_max_dti=0.5,
+        decline_dti_threshold=0.6,
+    )
 
-    score, _ = compute_risk_score(900, 1.0, 0.0, True, [])
+    score, _ = compute_risk_score(900, 1.0, 0.0, True, [], rule_set)
 
     assert score == 100.0

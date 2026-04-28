@@ -13,8 +13,11 @@ class FakeRedis:
     async def get(self, key: str):
         return self.values.get(key)
 
-    async def set(self, key: str, value):
+    async def set(self, key: str, value, **kwargs):
+        if kwargs.get("nx") and key in self.values:
+            return False
         self.values[key] = value
+        return True
 
     async def incr(self, key: str):
         self.values[key] = int(self.values.get(key, 0)) + 1

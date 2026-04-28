@@ -3,6 +3,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from engine.confidence import compute_data_reliability, compute_decision_confidence
+from engine.rule_sets import ACTIVE_RULE_SET, RuleSet
 from engine.rules import Decision, evaluate
 from engine.scoring import compute_risk_score
 from services import FailureType, ServiceResult
@@ -31,7 +32,7 @@ def compute_decision(
     gst_result: ServiceResult,
     user_data: dict[str, Any],
     confidence_threshold: float = 0.6,
-    rule_version: str = "RULE_SET_V1",
+    rule_set: RuleSet = ACTIVE_RULE_SET,
 ) -> DecisionOutput:
     """
     Orchestrates extraction, risk scoring, calibrated confidence, and manual review override.
@@ -57,6 +58,7 @@ def compute_decision(
         dti,
         gst_compliant,
         failure_types,
+        rule_set,
     )
 
     decision, factors = evaluate(
@@ -65,6 +67,7 @@ def compute_decision(
         dti,
         failure_types,
         gst_compliant,
+        rule_set,
     )
     factors = score_breakdown + factors
 
@@ -89,7 +92,7 @@ def compute_decision(
         risk_score=risk_score,
         factors=factors,
         penalty_reasons=penalty_reasons,
-        rule_version=rule_version,
+        rule_version=rule_set.version,
         requires_manual_review=requires_manual_review,
     )
 
@@ -106,7 +109,7 @@ def compute_decision_from_env(
         gst_result,
         user_data,
         confidence_threshold=float(os.getenv("CONFIDENCE_THRESHOLD", "0.6")),
-        rule_version=os.getenv("RULE_SET_VERSION", "RULE_SET_V1"),
+        rule_set=ACTIVE_RULE_SET,
     )
 
 

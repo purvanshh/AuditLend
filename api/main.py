@@ -1,3 +1,4 @@
+import os
 import time
 import uuid
 from collections.abc import Callable
@@ -24,14 +25,26 @@ structlog.configure(
 logger = structlog.get_logger()
 
 
+def cors_allowed_origins() -> list[str]:
+    raw_origins = os.environ.get("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000")
+    origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+    if "*" in origins:
+        raise RuntimeError("Wildcard CORS origins are not allowed")
+    return origins
+
+
+def configure_cors(target_app: FastAPI) -> None:
+    target_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_allowed_origins(),
+        allow_credentials=True,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "Idempotency-Key", "X-API-Key"],
+    )
+
+
 app = FastAPI(title="AuditLend API", version="2.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+configure_cors(app)
 
 app.include_router(applications.router, prefix="/api/v1", tags=["applications"])
 app.include_router(decisions.router, prefix="/api/v1", tags=["decisions"])
@@ -115,3 +128,4 @@ def _title_for_status(status_code: int) -> str:
     if status_code == 202:
         return "Accepted"
     return "Request Error"
+

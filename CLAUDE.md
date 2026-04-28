@@ -36,6 +36,7 @@ Credit Bureau Mock  Bank Analyzer Mock  GST Verifier Mock
 
 Core modules:
 - `engine/scoring.py`: weighted 0-100 risk score computation.
+- `engine/rule_sets.py`: immutable scorecard weights, thresholds, and active rule version.
 - `engine/confidence.py`: data reliability and calibrated confidence.
 - `services/crypto.py`: AES-GCM PII encryption and salted PAN hashing.
 - `services/metrics.py`: Prometheus business metrics.
@@ -52,6 +53,7 @@ Core modules:
 - Never throw or persist unclassified external-service failures. Use `FailureType`.
 - Never silently drop fallback usage. If fallback is used, audit it.
 - Never hardcode environment-specific URLs, thresholds, retry counts, secrets, or service endpoints.
+- Never change rule weights or thresholds in place; create a new immutable `RuleSet` version.
 - Never log or store raw PAN outside encrypted user payloads. Audit and external snapshots must redact it.
 - Never make data reliability or calibrated confidence implicit. Penalties and boundary factors belong in `engine/confidence.py` and tests.
 

@@ -1,6 +1,7 @@
 from enum import StrEnum
 from typing import Any
 
+from engine.rule_sets import ACTIVE_RULE_SET, RuleSet
 from services import FailureType
 
 
@@ -16,13 +17,15 @@ def evaluate(
     dti: float,
     failure_types: list[FailureType],
     gst_compliant: bool | None,
+    rule_set: RuleSet = ACTIVE_RULE_SET,
 ) -> tuple[Decision, list[str]]:
     """
     Pure function. Evaluates score-based rules in priority order.
     First matching rule wins.
     Returns (decision, list of factor strings for audit/explanation).
     """
-    effective_risk_score = min(risk_score, 54.0) if gst_compliant is False else risk_score
+    gst_cap = rule_set.approve_moderate_threshold - 1.0
+    effective_risk_score = min(risk_score, gst_cap) if gst_compliant is False else risk_score
 
     factors = [
         f"risk_score (raw) = {risk_score:.2f}",
@@ -40,15 +43,15 @@ def evaluate(
     else:
         factors.append("data_reliability_flags = none")
 
-    if effective_risk_score >= 70 and len(failure_types) == 0:
+    if effective_risk_score >= rule_set.approve_high_threshold and len(failure_types) == 0:
         factors.append("rule = Strong risk score with all data sources verified")
         return Decision.APPROVE, factors
 
-    if effective_risk_score >= 55 and dti < 0.5:
+    if effective_risk_score >= rule_set.approve_moderate_threshold and dti < rule_set.moderate_max_dti:
         factors.append("rule = Moderate risk score within acceptable DTI")
         return Decision.APPROVE, factors
 
-    if effective_risk_score < 35 or dti > 0.6:
+    if effective_risk_score < rule_set.decline_threshold or dti > rule_set.decline_dti_threshold:
         factors.append("rule = Risk score or DTI exceeds decline threshold")
         return Decision.DECLINE, factors
 

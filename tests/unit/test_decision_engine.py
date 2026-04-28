@@ -120,9 +120,8 @@ def test_decision_output_serializes_enum_values() -> None:
     assert output.to_dict()["data_reliability"] == 1.0
 
 
-def test_env_wrapper_uses_configured_threshold_and_rule_version(monkeypatch) -> None:
+def test_env_wrapper_uses_configured_threshold_and_active_rule_set(monkeypatch) -> None:
     monkeypatch.setenv("CONFIDENCE_THRESHOLD", "0.95")
-    monkeypatch.setenv("RULE_SET_VERSION", "RULE_SET_TEST")
 
     output = compute_decision_from_env(
         result({"credit_score": 800}),
@@ -131,7 +130,7 @@ def test_env_wrapper_uses_configured_threshold_and_rule_version(monkeypatch) -> 
         USER_DATA,
     )
 
-    assert output.rule_version == "RULE_SET_TEST"
+    assert output.rule_version == "RULE_SET_V1"
     assert output.requires_manual_review is False
 
 

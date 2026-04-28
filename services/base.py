@@ -46,7 +46,8 @@ class BaseExternalService:
         fail_mode: FailureType | None = None,
         application_id: str | None = None,
     ) -> ServiceResult:
-        if await self._circuit_state() == CircuitState.OPEN:
+        circuit_state = await self._circuit_state()
+        if circuit_state == CircuitState.OPEN:
             self.logger.warning(
                 "circuit_open_short_circuit",
                 application_id=application_id,
@@ -60,9 +61,25 @@ class BaseExternalService:
                 fallback_used=True,
             )
 
+        half_open_probe = False
+        if circuit_state == CircuitState.HALF_OPEN:
+            half_open_probe = await self._acquire_half_open_probe()
+            if not half_open_probe:
+                self.logger.warning(
+                    "circuit_half_open_probe_in_progress",
+                    application_id=application_id,
+                    step="EXTERNAL_SERVICE_CALL",
+                )
+                self._record_metrics(FailureType.SERVICE_DOWN.value, 0.0)
+                return ServiceResult(
+                    success=False,
+                    failure_type=FailureType.SERVICE_DOWN,
+                    fallback_used=True,
+                )
+
         retry_count = 0
         last_result: ServiceResult | None = None
-        max_retries = self._env_int("MAX_RETRIES", 3)
+        max_retries = 0 if half_open_probe else self._env_int("MAX_RETRIES", 3)
 
         for attempt in range(max_retries + 1):
             result = await self._attempt_call(method, path, params, body, fail_mode)
@@ -78,6 +95,18 @@ class BaseExternalService:
                     step="EXTERNAL_SERVICE_CALL",
                     failure_type=None,
                     retry_count=retry_count,
+                    latency_ms=result.latency_ms,
+                )
+                return result
+
+            if half_open_probe:
+                await self._record_half_open_failure()
+                result.fallback_used = result.failure_type in self.retryable_failures()
+                self.logger.warning(
+                    "circuit_half_open_probe_failed",
+                    application_id=application_id,
+                    step="CIRCUIT_BREAKER",
+                    failure_type=result.failure_type.value if result.failure_type else None,
                     latency_ms=result.latency_ms,
                 )
                 return result
@@ -215,6 +244,7 @@ class BaseExternalService:
         await self._redis_set(self._circuit_key("state"), CircuitState.CLOSED.value)
         await self._redis_delete(self._circuit_key("failure_count"))
         await self._redis_delete(self._circuit_key("last_failure"))
+        await self._redis_delete(self._circuit_key("probe_lock"))
 
     async def _record_service_down(self) -> None:
         if self.redis is None:
@@ -228,6 +258,25 @@ class BaseExternalService:
             await self._redis_set(self._circuit_key("state"), CircuitState.OPEN.value)
             circuit_breaker_state.labels(service=self.service_name).set(circuit_state_value(CircuitState.OPEN.value))
             self.logger.warning("circuit_opened", step="CIRCUIT_BREAKER", failure_count=count)
+
+    async def _acquire_half_open_probe(self) -> bool:
+        if self.redis is None:
+            return True
+        acquired = await self._redis_set(
+            self._circuit_key("probe_lock"),
+            "1",
+            nx=True,
+            ex=self._env_int("CIRCUIT_BREAKER_PROBE_LOCK_SECONDS", 10),
+        )
+        return bool(acquired)
+
+    async def _record_half_open_failure(self) -> None:
+        circuit_breaker_state.labels(service=self.service_name).set(circuit_state_value(CircuitState.OPEN.value))
+        if self.redis is None:
+            return
+        await self._redis_set(self._circuit_key("state"), CircuitState.OPEN.value)
+        await self._redis_set(self._circuit_key("last_failure"), str(monotonic()))
+        await self._redis_delete(self._circuit_key("probe_lock"))
 
     def _circuit_key(self, suffix: str) -> str:
         return f"circuit:{self.service_name}:{suffix}"
@@ -270,8 +319,8 @@ class BaseExternalService:
     async def _redis_get(self, key: str) -> Any:
         return await self._maybe_await(self.redis.get(key))
 
-    async def _redis_set(self, key: str, value: Any) -> None:
-        await self._maybe_await(self.redis.set(key, value))
+    async def _redis_set(self, key: str, value: Any, **kwargs: Any) -> Any:
+        return await self._maybe_await(self.redis.set(key, value, **kwargs))
 
     async def _redis_setex(self, key: str, ttl: int, value: Any) -> None:
         await self._maybe_await(self.redis.setex(key, ttl, value))
