@@ -44,6 +44,7 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       PII_ENCRYPTION_KEY: "02468ace02468ace02468ace02468ace02468ace02468ace02468ace02468ace"
       PAN_HASH_SALT: auditlend-ci-salt
+      API_KEYS: test-api-key-for-ci:read-write
 
     steps:
       - uses: actions/checkout@v4

@@ -22,4 +22,5 @@ class ExternalData(Base):
 
     __table_args__ = (
         Index("idx_external_data_app", "application_id", "source_type"),
+        Index("uq_external_data_application_source", "application_id", "source_type", unique=True),
     )

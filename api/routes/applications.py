@@ -10,19 +10,25 @@ import structlog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.auth import require_auth, require_read
 from api.dependencies import get_async_session
 from api.schemas.application import ApplyLoanRequest, ApplyLoanResponse, StatusResponse
 from models.application import LoanApplication
 from models.idempotency import IdempotencyRecord
+from models.outbox import OutboxMessage
 from services.crypto import pii_service_from_env
 from services.metrics import loan_applications_total
-from worker.tasks.process_application import process_application
 
 router = APIRouter()
 logger = structlog.get_logger()
 
 
-@router.post("/apply-loan", response_model=ApplyLoanResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/apply-loan",
+    response_model=ApplyLoanResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_auth)],
+)
 async def apply_loan(
     request: ApplyLoanRequest,
     response: Response,
@@ -63,6 +69,13 @@ async def apply_loan(
     )
     session.add(application)
     await session.flush()
+    session.add(
+        OutboxMessage(
+            task_name="worker.tasks.process_application.process_application",
+            task_args={"application_id": str(application.id)},
+            status="PENDING",
+        )
+    )
 
     public_response = {
         "application_id": str(application.id),
@@ -94,11 +107,10 @@ async def apply_loan(
     await session.commit()
     await _redis_idempotency_set(key, idempotency_response)
     loan_applications_total.labels(status=application.status).inc()
-    process_application.delay(str(application.id))
     return ApplyLoanResponse(**public_response)
 
 
-@router.get("/status/{application_id}", response_model=StatusResponse)
+@router.get("/status/{application_id}", response_model=StatusResponse, dependencies=[Depends(require_read)])
 async def get_status(
     application_id: str,
     session: Annotated[AsyncSession, Depends(get_async_session)],

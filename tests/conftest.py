@@ -31,6 +31,7 @@ os.environ.setdefault("ASYNC_DATABASE_URL", TEST_ASYNC_DATABASE_URL)
 os.environ.setdefault("REDIS_URL", TEST_REDIS_URL)
 os.environ.setdefault("PII_ENCRYPTION_KEY", TEST_PII_ENCRYPTION_KEY)
 os.environ.setdefault("PAN_HASH_SALT", TEST_PAN_HASH_SALT)
+os.environ.setdefault("API_KEYS", "test-api-key-for-ci:read-write")
 
 
 def _postgres_available() -> bool:
@@ -96,17 +97,10 @@ def api_client(clean_database: Engine, monkeypatch: pytest.MonkeyPatch):
     from fastapi.testclient import TestClient
 
     from api.main import app
-    from api.routes import applications
 
-    enqueued: list[str] = []
-
-    def fake_delay(application_id: str) -> None:
-        enqueued.append(application_id)
-
-    monkeypatch.setattr(applications.process_application, "delay", fake_delay)
-
+    monkeypatch.setenv("API_KEYS", "test-api-key-for-ci:read-write")
     client = TestClient(app)
-    client.enqueued_applications = enqueued
+    client.headers.update({"X-API-Key": "test-api-key-for-ci"})
     return client
 
 
@@ -115,7 +109,7 @@ def _truncate_database(engine: Engine) -> None:
         connection.execute(
             text(
                 "TRUNCATE TABLE audit_logs, external_data, idempotency_records, "
-                "loan_applications RESTART IDENTITY CASCADE"
+                "outbox, loan_applications RESTART IDENTITY CASCADE"
             )
         )
 

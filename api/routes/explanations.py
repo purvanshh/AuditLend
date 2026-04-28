@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.auth import require_read
 from api.dependencies import get_async_session
 from api.schemas.explanation import ExplanationResponse
 from engine.explanation_builder import build_explanation
@@ -15,7 +16,7 @@ from models.audit_log import AuditLog
 router = APIRouter()
 
 
-@router.get("/explanation/{application_id}", response_model=ExplanationResponse)
+@router.get("/explanation/{application_id}", response_model=ExplanationResponse, dependencies=[Depends(require_read)])
 async def get_explanation(
     application_id: str,
     session: Annotated[AsyncSession, Depends(get_async_session)],

@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.auth import require_read
 from api.dependencies import get_async_session
 from api.schemas.decision import DecisionResponse
 from models.application import LoanApplication
@@ -14,7 +15,7 @@ from models.audit_log import AuditLog
 router = APIRouter()
 
 
-@router.get("/decision/{application_id}", response_model=DecisionResponse)
+@router.get("/decision/{application_id}", response_model=DecisionResponse, dependencies=[Depends(require_read)])
 async def get_decision(
     application_id: str,
     session: Annotated[AsyncSession, Depends(get_async_session)],

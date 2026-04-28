@@ -599,6 +599,7 @@ curl "http://localhost:8003/verify-gst?pan=AAAAA1111F&fail_mode=NO_RECORD"
 | `RULE_SET_VERSION` | Active rule version recorded in audit logs | `RULE_SET_V1` |
 | `PII_ENCRYPTION_KEY` | Required 64-character hex AES-256-GCM key; insecure defaults are rejected at startup | `${PII_ENCRYPTION_KEY}` |
 | `PAN_HASH_SALT` | Required per-environment salt used for SHA-256 PAN hashing; insecure defaults are rejected at startup | `${PAN_HASH_SALT}` |
+| `API_KEYS` | Comma-separated API keys with optional scopes, e.g. `key:read-write,key2:read` | `${API_KEYS}` |
 | `CIRCUIT_BREAKER_THRESHOLD` | Failures before opening service circuit | `5` |
 | `CIRCUIT_BREAKER_WINDOW_SECONDS` | Failure counting window | `60` |
 | `CIRCUIT_BREAKER_TIMEOUT_SECONDS` | Open circuit cooldown | `120` |

@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -202,23 +203,83 @@ async def _fetch_external_data(
     gst_service = GstVerifierService(redis_client=redis_client)
 
     return await asyncio.gather(
-        credit_service.fetch(
-            pan,
-            application_id=str(application_id),
-            fail_mode=_failure_flag(failure_flags, "credit_bureau"),
+        _fetch_or_reuse_external_data(
+            application_id,
+            "CREDIT_BUREAU",
+            "credit_bureau",
+            failure_flags,
+            lambda: credit_service.fetch(
+                pan,
+                application_id=str(application_id),
+                fail_mode=_failure_flag(failure_flags, "credit_bureau"),
+            ),
         ),
-        bank_service.analyze(
-            pan,
-            bank_statement=user_data.get("bank_statement", []),
-            application_id=str(application_id),
-            fail_mode=_failure_flag(failure_flags, "bank_analyzer"),
+        _fetch_or_reuse_external_data(
+            application_id,
+            "BANK_ANALYZER",
+            "bank_analyzer",
+            failure_flags,
+            lambda: bank_service.analyze(
+                pan,
+                bank_statement=user_data.get("bank_statement", []),
+                application_id=str(application_id),
+                fail_mode=_failure_flag(failure_flags, "bank_analyzer"),
+            ),
         ),
-        gst_service.verify(
-            pan,
-            application_id=str(application_id),
-            fail_mode=_failure_flag(failure_flags, "gst_verifier"),
+        _fetch_or_reuse_external_data(
+            application_id,
+            "GST_VERIFIER",
+            "gst_verifier",
+            failure_flags,
+            lambda: gst_service.verify(
+                pan,
+                application_id=str(application_id),
+                fail_mode=_failure_flag(failure_flags, "gst_verifier"),
+            ),
         ),
     )
+
+
+async def _fetch_or_reuse_external_data(
+    application_id: UUID,
+    source_type: str,
+    flag_key: str,
+    failure_flags: dict[str, Any],
+    fetch_call: Callable[[], Awaitable[ServiceResult]],
+) -> ServiceResult:
+    existing = _load_external_result(application_id, source_type)
+    if existing is not None:
+        logger.info(
+            "external_data_reused",
+            application_id=str(application_id),
+            step=f"{source_type}_FETCH",
+            source_type=source_type,
+        )
+        return existing
+
+    result = await fetch_call()
+    with get_sync_session() as session:
+        existing_row = session.execute(
+            select(ExternalData).where(
+                ExternalData.application_id == application_id,
+                ExternalData.source_type == source_type,
+            )
+        ).scalar_one_or_none()
+        if existing_row is not None:
+            return _service_result_from_external_data(existing_row)
+        _store_external_result(session, application_id, source_type, flag_key, failure_flags, result)
+    return result
+
+
+def _load_external_result(application_id: UUID, source_type: str) -> ServiceResult | None:
+    with get_sync_session() as session:
+        row = session.execute(
+            select(ExternalData).where(
+                ExternalData.application_id == application_id,
+                ExternalData.source_type == source_type,
+            )
+        ).scalar_one_or_none()
+        return _service_result_from_external_data(row) if row is not None else None
 
 
 def _store_processing_results(
@@ -245,10 +306,6 @@ def _store_processing_results(
                 status=application.status,
             )
             return
-
-        _store_external_result(session, application_id, "CREDIT_BUREAU", "credit_bureau", failure_flags, credit_result)
-        _store_external_result(session, application_id, "BANK_ANALYZER", "bank_analyzer", failure_flags, bank_result)
-        _store_external_result(session, application_id, "GST_VERIFIER", "gst_verifier", failure_flags, gst_result)
 
         status = _status_for_decision(decision_output)
         application.status = status
@@ -321,6 +378,29 @@ def _store_external_result(
         fallback_reason=failure_type,
         session=session,
     )
+
+
+def _service_result_from_external_data(row: ExternalData) -> ServiceResult:
+    failure_type = FailureType(row.failure_type) if row.failure_type else None
+    response_data = dict(row.response_data or {})
+    return ServiceResult(
+        success=failure_type is None,
+        data=response_data or None,
+        raw_response=response_data or None,
+        failure_type=failure_type,
+        fallback_used=_fallback_used_for_reconstructed_result(failure_type),
+        request_id=response_data.get("request_id"),
+    )
+
+
+def _fallback_used_for_reconstructed_result(failure_type: FailureType | None) -> bool:
+    return failure_type in {
+        FailureType.TIMEOUT,
+        FailureType.SERVICE_DOWN,
+        FailureType.FORMAT_ERROR,
+        FailureType.PAN_MISMATCH,
+        FailureType.NO_RECORD,
+    }
 
 
 def _mark_manual_review_after_system_error(application_id: str, exc: Exception, error_type: str) -> None:

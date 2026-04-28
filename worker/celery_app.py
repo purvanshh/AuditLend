@@ -1,6 +1,7 @@
 import os
 
 from celery import Celery
+from celery.signals import worker_ready
 import structlog
 
 
@@ -27,3 +28,10 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     timezone="UTC",
 )
+
+
+@worker_ready.connect
+def _start_outbox_poller_on_worker_ready(**_: object) -> None:
+    from worker.outbox_poller import start_outbox_poller
+
+    start_outbox_poller()

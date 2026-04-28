@@ -27,7 +27,11 @@ async def _unused_session_override():
 def _post_apply_loan_without_db(payload: dict):
     app.dependency_overrides[get_async_session] = _unused_session_override
     try:
-        return TestClient(app).post("/api/v1/apply-loan", json=payload)
+        return TestClient(app).post(
+            "/api/v1/apply-loan",
+            json=payload,
+            headers={"X-API-Key": "test-api-key-for-ci"},
+        )
     finally:
         app.dependency_overrides.pop(get_async_session, None)
 

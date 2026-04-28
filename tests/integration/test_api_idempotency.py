@@ -8,14 +8,14 @@ def test_apply_loan_replays_same_idempotency_response(api_client, clean_database
     assert first.status_code == 201
     assert second.status_code == 200
     assert first.json()["application_id"] == second.json()["application_id"]
-    assert api_client.enqueued_applications == [first.json()["application_id"]]
-
     with clean_database.connect() as connection:
         application_count = connection.scalar(text("SELECT count(*) FROM loan_applications"))
         idempotency_count = connection.scalar(text("SELECT count(*) FROM idempotency_records"))
+        outbox_count = connection.scalar(text("SELECT count(*) FROM outbox"))
 
     assert application_count == 1
     assert idempotency_count == 1
+    assert outbox_count == 1
 
 
 def test_apply_loan_encrypts_user_data_and_hashes_pan(api_client, clean_database, sample_apply_payload) -> None:
