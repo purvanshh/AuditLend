@@ -44,6 +44,15 @@ def test_credit_bureau_service_down_returns_exact_error_body() -> None:
     assert len(response.json()["request_id"]) == 12
 
 
+def test_credit_bureau_rejects_gst_only_failure_mode() -> None:
+    client = TestClient(credit_app)
+
+    response = client.get("/credit-score", params={"pan": PAN, "fail_mode": "PAN_MISMATCH"})
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "Validation error"
+
+
 def test_bank_analyzer_partial_data_omits_expected_fields() -> None:
     client = TestClient(bank_app)
 
@@ -85,6 +94,19 @@ def test_bank_analyzer_format_error_returns_exact_error_body() -> None:
     assert response.json()["error"] == "Unable to parse bank statement"
 
 
+def test_bank_analyzer_rejects_credit_only_failure_mode() -> None:
+    client = TestClient(bank_app)
+
+    response = client.post(
+        "/analyze",
+        params={"fail_mode": "TIMEOUT"},
+        json={"pan": PAN, "bank_statement": []},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "Validation error"
+
+
 def test_gst_pan_mismatch_is_typed_successful_response() -> None:
     client = TestClient(gst_app)
 
@@ -106,3 +128,12 @@ def test_gst_no_record_returns_exact_error_body() -> None:
     assert response.status_code == 404
     assert response.json() == repeated.json()
     assert response.json()["error"] == "No GST record found for this PAN"
+
+
+def test_gst_verifier_rejects_credit_only_failure_mode() -> None:
+    client = TestClient(gst_app)
+
+    response = client.get("/verify-gst", params={"pan": PAN, "fail_mode": "TIMEOUT"})
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "Validation error"

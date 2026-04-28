@@ -15,3 +15,4 @@ pytest-asyncio==0.24.*
 pytest-cov==6.0.*
 cryptography==44.0.*
 prometheus-fastapi-instrumentator==7.0.*
+greenlet==3.1.*

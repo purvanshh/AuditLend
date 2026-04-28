@@ -6,6 +6,8 @@ from time import perf_counter
 
 import structlog
 from fastapi import FastAPI, Query
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 
@@ -62,6 +64,11 @@ def _log_request(pan: str, fail_mode: CreditFailMode, status_code: int, started_
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "credit-bureau-mock"}
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc: RequestValidationError) -> JSONResponse:
+    return JSONResponse(status_code=400, content={"error": "Validation error", "details": jsonable_encoder(exc.errors())})
 
 
 @app.get("/credit-score")

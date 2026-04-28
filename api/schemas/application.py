@@ -1,14 +1,32 @@
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from services import FailureType
+
+class CreditBureauFailureMode(StrEnum):
+    SUCCESS = "SUCCESS"
+    TIMEOUT = "TIMEOUT"
+    STALE_DATA = "STALE_DATA"
+    SERVICE_DOWN = "SERVICE_DOWN"
+
+
+class BankAnalyzerFailureMode(StrEnum):
+    SUCCESS = "SUCCESS"
+    PARTIAL_DATA = "PARTIAL_DATA"
+    FORMAT_ERROR = "FORMAT_ERROR"
+
+
+class GSTVerifierFailureMode(StrEnum):
+    SUCCESS = "SUCCESS"
+    PAN_MISMATCH = "PAN_MISMATCH"
+    NO_RECORD = "NO_RECORD"
 
 
 class FailureFlags(BaseModel):
-    credit_bureau: FailureType | None = None
-    bank_analyzer: FailureType | None = None
-    gst_verifier: FailureType | None = None
+    credit_bureau: CreditBureauFailureMode | None = None
+    bank_analyzer: BankAnalyzerFailureMode | None = None
+    gst_verifier: GSTVerifierFailureMode | None = None
 
 
 class UserData(BaseModel):
