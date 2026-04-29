@@ -36,38 +36,42 @@ def test_full_remediated_pipeline(api_client, clean_database, sample_apply_paylo
     application_id = first.json()["application_id"]
     assert second.json()["application_id"] == application_id
 
-    async def fake_fetch_external_data(app_id, user_data, failure_flags, redis_client):
-        assert user_data["pan"] == payload["user_data"]["pan"]
-        return (
-            ServiceResult(
-                success=False,
-                data={
-                    "pan": payload["user_data"]["pan"],
-                    "credit_score": 850,
-                    "last_updated": "2025-07-15T00:00:00Z",
-                },
-                failure_type=FailureType.STALE_DATA,
-                raw_response={
-                    "pan": payload["user_data"]["pan"],
-                    "credit_score": 850,
-                    "last_updated": "2025-07-15T00:00:00Z",
-                },
-            ),
-            ServiceResult(
-                success=False,
-                data={"monthly_inflow": 120000, "monthly_outflow": 65000},
-                failure_type=FailureType.PARTIAL_DATA,
-                raw_response={"monthly_inflow": 120000, "monthly_outflow": 65000},
-            ),
-            ServiceResult(
-                success=True,
-                data={"gst_compliant": True},
-                raw_response={"gst_compliant": True},
-            ),
+    async def fake_credit_fetch(self, pan, *args, **kwargs):
+        assert pan == payload["user_data"]["pan"]
+        return ServiceResult(
+            success=False,
+            data={
+                "pan": payload["user_data"]["pan"],
+                "credit_score": 850,
+                "last_updated": "2025-07-15T00:00:00Z",
+            },
+            failure_type=FailureType.STALE_DATA,
+            raw_response={
+                "pan": payload["user_data"]["pan"],
+                "credit_score": 850,
+                "last_updated": "2025-07-15T00:00:00Z",
+            },
+        )
+
+    async def fake_bank_analyze(*args, **kwargs):
+        return ServiceResult(
+            success=False,
+            data={"monthly_inflow": 120000, "monthly_outflow": 65000},
+            failure_type=FailureType.PARTIAL_DATA,
+            raw_response={"monthly_inflow": 120000, "monthly_outflow": 65000},
+        )
+
+    async def fake_gst_verify(*args, **kwargs):
+        return ServiceResult(
+            success=True,
+            data={"gst_compliant": True},
+            raw_response={"gst_compliant": True},
         )
 
     monkeypatch.setattr(task_module.redis_async, "from_url", lambda *args, **kwargs: FakeRedis())
-    monkeypatch.setattr(task_module, "_fetch_external_data", fake_fetch_external_data)
+    monkeypatch.setattr(task_module.CreditBureauService, "fetch", fake_credit_fetch)
+    monkeypatch.setattr(task_module.BankAnalyzerService, "analyze", fake_bank_analyze)
+    monkeypatch.setattr(task_module.GstVerifierService, "verify", fake_gst_verify)
 
     worker_result = asyncio.run(task_module._process_application(application_id))
 

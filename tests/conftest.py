@@ -5,6 +5,7 @@ from collections.abc import Generator
 from typing import Any
 
 import pytest
+import redis
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
@@ -32,6 +33,7 @@ os.environ.setdefault("REDIS_URL", TEST_REDIS_URL)
 os.environ.setdefault("PII_ENCRYPTION_KEY", TEST_PII_ENCRYPTION_KEY)
 os.environ.setdefault("PAN_HASH_SALT", TEST_PAN_HASH_SALT)
 os.environ.setdefault("API_KEYS", "test-api-key-for-ci:read-write")
+os.environ.setdefault("AUDITLEND_ASYNC_DB_POOL", "null")
 
 
 def _postgres_available() -> bool:
@@ -86,10 +88,12 @@ def postgres_engine() -> Generator[Engine, None, None]:
 @pytest.fixture
 def clean_database(postgres_engine: Engine) -> Generator[Engine, None, None]:
     _truncate_database(postgres_engine)
+    _flush_redis()
     try:
         yield postgres_engine
     finally:
         _truncate_database(postgres_engine)
+        _flush_redis()
 
 
 @pytest.fixture
@@ -112,6 +116,14 @@ def _truncate_database(engine: Engine) -> None:
                 "outbox, loan_applications RESTART IDENTITY CASCADE"
             )
         )
+
+
+def _flush_redis() -> None:
+    client = redis.Redis.from_url(TEST_REDIS_URL)
+    try:
+        client.flushdb()
+    finally:
+        client.close()
 
 
 def encrypted_application_fields(user_data: dict[str, Any]) -> dict[str, Any]:

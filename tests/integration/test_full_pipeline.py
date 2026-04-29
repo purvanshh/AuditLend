@@ -34,15 +34,19 @@ def _insert_application(engine, user_data, failure_flags=None) -> str:
 def test_full_worker_pipeline_success(monkeypatch, clean_database, sample_user_data) -> None:
     application_id = _insert_application(clean_database, sample_user_data)
 
-    async def fake_fetch_external_data(app_id, user_data, failure_flags, redis_client):
-        return (
-            ServiceResult(success=True, data={"credit_score": 800}, raw_response={"credit_score": 800}),
-            ServiceResult(success=True, data={"income_stability": 0.9}, raw_response={"income_stability": 0.9}),
-            ServiceResult(success=True, data={"gst_compliant": True}, raw_response={"gst_compliant": True}),
-        )
+    async def fake_credit_fetch(*args, **kwargs):
+        return ServiceResult(success=True, data={"credit_score": 800}, raw_response={"credit_score": 800})
+
+    async def fake_bank_analyze(*args, **kwargs):
+        return ServiceResult(success=True, data={"income_stability": 0.9}, raw_response={"income_stability": 0.9})
+
+    async def fake_gst_verify(*args, **kwargs):
+        return ServiceResult(success=True, data={"gst_compliant": True}, raw_response={"gst_compliant": True})
 
     monkeypatch.setattr(task_module.redis_async, "from_url", lambda *args, **kwargs: FakeRedis())
-    monkeypatch.setattr(task_module, "_fetch_external_data", fake_fetch_external_data)
+    monkeypatch.setattr(task_module.CreditBureauService, "fetch", fake_credit_fetch)
+    monkeypatch.setattr(task_module.BankAnalyzerService, "analyze", fake_bank_analyze)
+    monkeypatch.setattr(task_module.GstVerifierService, "verify", fake_gst_verify)
 
     result = asyncio.run(task_module._process_application(application_id))
 

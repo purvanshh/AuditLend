@@ -1,10 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+import asyncio
 import uuid
 
+import httpx
+import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from api.main import app
 from models.application import LoanApplication
 from tests.conftest import encrypted_application_fields
 from worker.tasks import process_application as task_module
@@ -31,14 +35,20 @@ def _insert_application(engine, user_data, status="PENDING") -> str:
     return str(application_id)
 
 
-def test_concurrent_requests_create_one_application(api_client, clean_database, sample_apply_payload) -> None:
-    def submit() -> dict:
-        response = api_client.post("/api/v1/apply-loan", json=sample_apply_payload)
+@pytest.mark.asyncio
+async def test_concurrent_requests_create_one_application(clean_database, sample_apply_payload) -> None:
+    async def submit(client: httpx.AsyncClient) -> dict:
+        response = await client.post("/api/v1/apply-loan", json=sample_apply_payload)
         assert response.status_code in {200, 201}
         return response.json()
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        responses = list(executor.map(lambda _: submit(), range(10)))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-API-Key": "test-api-key-for-ci"},
+    ) as client:
+        responses = await asyncio.gather(*(submit(client) for _ in range(10)))
 
     assert len({response["application_id"] for response in responses}) == 1
     with clean_database.connect() as connection:

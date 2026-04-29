@@ -95,12 +95,21 @@ def sanitize_audit_snapshot(snapshot: Any) -> Any:
 
 def _safe_value_for_key(key: str, value: Any) -> Any:
     if key in {"monthly_income", "monthly_inflow"}:
-        return _income_band(float(value or 0))
+        numeric_value = _coerce_float(value)
+        return _income_band(numeric_value) if numeric_value is not None else "***REDACTED***"
     if key in {"loan_amount", "monthly_outflow", "average_balance", "annual_turnover"}:
-        return _amount_band(float(value or 0))
+        numeric_value = _coerce_float(value)
+        return _amount_band(numeric_value) if numeric_value is not None else "***REDACTED***"
     if key in {"existing_emis", "bank_statement"}:
         return "***REDACTED***"
     return "***REDACTED***"
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return None
 
 
 def _income_band(income: float) -> str:

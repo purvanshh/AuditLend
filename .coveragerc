@@ -1,0 +1,11 @@
+[run]
+omit =
+    migrations/*
+    mock_apis/run_all.py
+    tests/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    if __name__ == .__main__.:
