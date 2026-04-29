@@ -1,108 +1,246 @@
-# AuditLend - The Auditable Credit Decision Engine
+# AuditLend
 
-Every decision, explained. Every failure, handled. Every step, audited.
+Auditable credit decision engine with deterministic failure simulation, idempotent intake, asynchronous processing, encrypted PII storage, immutable audit logs, calibrated decision confidence, and human-readable explanations.
 
-AuditLend is a production-readiness reference implementation of a credit decision engine. It processes loan applications asynchronously, handles deterministic external-data failures, computes a governed weighted risk score, separates data reliability from calibrated decision confidence, protects PII at rest, stores immutable audit logs, exposes Prometheus metrics, and returns borrower- or reviewer-friendly explanations for every decision.
+This repository is a production-readiness reference implementation. It is built and tested end to end with local infrastructure, mock external providers, Docker Compose, PostgreSQL, Redis, FastAPI, and Celery. It is not wired to real credit bureaus or real lending portfolios, and its current risk score is governed and deterministic but not empirically calibrated on historical default data.
 
-## Production Readiness Status
+## Current Status
 
-This repository is being hardened against the production readiness audit checklist tracked in this remediation sprint. The current implementation includes API key authentication, AES-256-GCM PII encryption, salted PAN hashing, transactional outbox delivery, immutable rule-set governance, Prometheus metrics, deterministic mocks, and database-level audit mutation protection.
+Last verified locally: **2026-04-29**
+
+| Area | Status | Evidence |
+| --- | --- | --- |
+| Docker stack | PASS | `docker compose up --build -d`; API, worker, Redis, Postgres, mocks, and Flower started |
+| Service health | PASS | API `/health` returned `200`; worker `/health` returned `200`; all core compose services reported healthy |
+| Authentication | PASS | Protected status endpoint returned `401` without key and `404` with valid read key for a missing app |
+| Metrics | PASS | `/metrics` returned Prometheus output with `auditlend_*` metrics |
+| Full test suite | PASS | `124 passed`, `0 skipped` |
+| Coverage gate | PASS | `87.24%`, above the configured `85%` threshold |
+| Live end-to-end smoke | PASS | API intake -> outbox -> Celery worker -> mock services -> decision -> audit -> explanation |
+
+Live smoke result from the final verification run:
+
+```json
+{
+  "status": "COMPLETED",
+  "decision": "APPROVE",
+  "confidence": 0.7,
+  "data_reliability": 1.0,
+  "risk_score": 64.1,
+  "rule_version": "RULE_SET_V1"
+}
+```
+
+The explanation endpoint returned an audit-derived timeline:
+
+```text
+PROCESSING_STARTED -> CREDIT_BUREAU_FETCH -> GST_VERIFIER_FETCH -> BANK_ANALYZER_FETCH -> DECISION_CALCULATION
+```
+
+## What Is Actually Implemented
+
+### API and Processing
+
+- FastAPI application with authenticated loan application intake.
+- Celery worker for asynchronous processing.
+- Redis broker/result backend, idempotency cache, and circuit breaker state.
+- PostgreSQL source of truth for applications, idempotency records, external data snapshots, outbox messages, and audit logs.
+- Transactional outbox pattern so API writes and task delivery intent are committed together.
+- Worker-side task claiming with atomic `UPDATE ... WHERE status=PENDING`.
+- External data fetch reuse so worker retries do not repeat already-persisted provider calls.
+
+### Decision Engine
+
+- Weighted risk score in `engine/scoring.py`.
+- Immutable rule set registry in `engine/rule_sets.py`.
+- Decision rules in `engine/rules.py`.
+- Orchestration in `engine/decision.py`.
+- Separate fields for:
+  - `risk_score`
+  - `data_reliability`
+  - calibrated `confidence`
+- GST non-compliance gate that prevents automatic approval when GST mismatch is explicit.
+- Manual review override when calibrated confidence falls below threshold.
+
+### Security and Data Protection
+
+- API key authentication on application, status, decision, and explanation routes.
+- AES-256-GCM encryption for stored application PII.
+- Salted SHA-256 PAN hash.
+- Raw PAN is not stored in loan application rows.
+- Audit snapshots are sanitized and band raw financial values before persistence.
+- Explanation responses are derived from audit logs and do not expose raw PAN or names.
+
+### Audit and Compliance Trail
+
+- Append-only audit log writes in application code.
+- Database trigger blocks `UPDATE` and `DELETE` against `audit_logs`.
+- Audit entries include step, input/output snapshot, error type, fallback flag, rule version, actor, and timestamp where applicable.
+- Explanation engine builds summaries and timelines from audit history, not from a fresh recomputation.
+
+### Resilience and Observability
+
+- Retry/backoff for retryable provider failures.
+- Redis-backed circuit breaker with half-open single-probe lock.
+- Per-provider failure modes.
+- Configurable external API timeout.
+- Worker health endpoint on port `8004`.
+- Structured JSON logs.
+- Prometheus metrics for applications, external calls, circuit breaker state, decision confidence, task duration, and task failures.
+
+### Deterministic Mocks
+
+Mock services live under `mock_apis/` and support deterministic success and failure modes:
+
+- Credit bureau: `SUCCESS`, `TIMEOUT`, `STALE_DATA`, `SERVICE_DOWN`
+- Bank analyzer: `SUCCESS`, `PARTIAL_DATA`, `FORMAT_ERROR`
+- GST verifier: `SUCCESS`, `PAN_MISMATCH`, `NO_RECORD`
+
+For identical inputs, mock responses are deterministic. Request IDs are input-derived, not random UUIDs. Stale data uses a fixed reference date.
+
+## What This Project Does Not Claim
+
+This is important. AuditLend is built end to end, but it is not a drop-in live lending system without additional institutional controls.
+
+- The scorecard is deterministic and governed, but it is not empirically calibrated against a real repayment/default dataset.
+- Mock APIs are deterministic test doubles, not real provider integrations.
+- API key auth is suitable for this reference stack, but a real deployment should use OAuth2/OIDC, scoped service identities, mTLS, and centralized secret management.
+- Docker Compose is a local/demo deployment target, not a production orchestrator.
+- TLS/mTLS, managed key rotation, SIEM integration, data retention automation, and formal model risk governance are outside this repository.
+- Containers currently run in a local developer-oriented configuration; hardening user privileges and image policies is a production deployment task.
+
+## Architecture
+
+```text
+Client
+  |
+  | POST /api/v1/apply-loan
+  v
+FastAPI API
+  | \
+  |  \-- PostgreSQL
+  |       - loan_applications
+  |       - idempotency_records
+  |       - outbox
+  |       - external_data
+  |       - audit_logs
+  |
+  \-- Redis
+       - idempotency cache
+       - Celery broker/result backend
+       - circuit breaker state
+
+Celery Worker
+  |
+  |-- polls outbox
+  |-- atomically claims applications
+  |-- fetches/reuses external data
+  |-- computes decision
+  |-- stores audit trail
+  |
+  |-- Credit Bureau Mock
+  |-- Bank Analyzer Mock
+  \-- GST Verifier Mock
+```
+
+## Repository Map
+
+| Path | Purpose |
+| --- | --- |
+| `api/` | FastAPI app, auth, routes, schemas |
+| `worker/` | Celery app, outbox poller, processing task |
+| `engine/` | Scoring, rule sets, decision orchestration, explanation builder |
+| `services/` | Provider clients, crypto, audit safety, metrics, logging |
+| `models/` | SQLAlchemy models |
+| `migrations/` | Alembic migrations |
+| `mock_apis/` | Deterministic external-provider mocks |
+| `tests/` | Unit, integration, and chaos tests |
+| `docs/CALIBRATION.md` | Current scorecard calibration status and rule-set governance notes |
 
 ## Quick Start
 
 Prerequisites:
 
-- Docker
+- Docker Desktop or Docker Engine
 - Docker Compose
 
-Start the full stack:
+This project requires real-looking local secrets. For local development, `docker-compose.override.yml` supplies dev-only values and is gitignored.
+
+Start the stack:
 
 ```bash
-docker compose up --build
+docker compose up --build -d
 ```
 
-The stack exposes:
-
-- API: `http://localhost:8000`
-- Credit bureau mock: `http://localhost:8001`
-- Bank analyzer mock: `http://localhost:8002`
-- GST verifier mock: `http://localhost:8003`
-- Flower: `http://localhost:5555`
-
-Health check:
+Check service health:
 
 ```bash
 curl http://localhost:8000/health
+curl http://localhost:8004/health
+docker compose ps
 ```
 
-Expected response:
+Expected API health response:
 
 ```json
 {"status":"healthy","service":"auditlend-api","version":"2.0.0"}
 ```
 
-## Architecture
+Useful local endpoints:
+
+| Service | URL |
+| --- | --- |
+| API | `http://localhost:8000` |
+| Credit bureau mock | `http://localhost:8001` |
+| Bank analyzer mock | `http://localhost:8002` |
+| GST verifier mock | `http://localhost:8003` |
+| Worker health | `http://localhost:8004/health` |
+| Flower | `http://localhost:5555` |
+| Metrics | `http://localhost:8000/metrics` |
+
+## API Authentication
+
+Protected routes require `X-API-Key`.
+
+The local override defines:
 
 ```text
-+---------+
-| Client  |
-+----+----+
-     | POST /api/v1/apply-loan
-     v
-+---------+      idempotency + app state      +------------+
-| FastAPI |----------------------------------->| PostgreSQL |
-|   API   |<-----------------------------------| source     |
-+----+----+                                    | truth      |
-     | enqueue                                 +-----+------+
-     v                                               ^
-+---------+      fetch external data                 | audit,
-| Redis   |----->+-----------------+-----------------+ snapshots,
-| broker  |      | Celery Worker   |                 | decisions
-+---------+      +--------+--------+
-                          |
-             +------------+-------------+
-             v            v             v
-      Credit Bureau  Bank Analyzer  GST Verifier
-          Mock           Mock           Mock
+dev-key-read-write
+dev-key-read-only
 ```
 
-## Failure Walkthrough
-
-All scenarios use deterministic failure flags. Re-running the same request with the same idempotency key returns the same application ID. Reusing the same idempotency key with a different payload returns `409 Conflict`.
-
-The examples below use `jq` for readability. If you do not have it, remove the `| jq` pieces.
-
-### Helper: Poll A Decision
-
-After any `POST /apply-loan`, save the returned `application_id`:
+Examples:
 
 ```bash
-APP_ID="<application_id>"
+curl -i http://localhost:8000/api/v1/status/00000000-0000-0000-0000-000000000000
 ```
 
-Then poll:
+Expected: `401`
 
 ```bash
-curl -s "http://localhost:8000/api/v1/status/$APP_ID" | jq
-curl -s "http://localhost:8000/api/v1/decision/$APP_ID" | jq
-curl -s "http://localhost:8000/api/v1/explanation/$APP_ID" | jq
+curl -i \
+  -H "X-API-Key: dev-key-read-only" \
+  http://localhost:8000/api/v1/status/00000000-0000-0000-0000-000000000000
 ```
 
-### Scenario 1: Everything Works
+Expected: `404` because authentication passed and the application does not exist.
 
-This PAN is intentionally chosen because the mock services deterministically return a strong profile for it.
+## End-to-End Smoke Test
+
+Submit an application:
 
 ```bash
 APP_ID=$(curl -s -X POST http://localhost:8000/api/v1/apply-loan \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: demo-green-001" \
+  -H "X-API-Key: dev-key-read-write" \
+  -H "Idempotency-Key: smoke-001" \
   -d '{
-    "idempotency_key": "demo-green-001",
+    "idempotency_key": "smoke-001",
     "user_data": {
       "name": "Jane Doe",
-      "pan": "AAAAA1111F",
-      "monthly_income": 150000,
-      "existing_emis": 20000,
+      "pan": "ABCDE1234F",
+      "monthly_income": 120000,
+      "existing_emis": 25000,
       "loan_amount": 500000,
       "tenure_months": 36
     },
@@ -111,360 +249,183 @@ APP_ID=$(curl -s -X POST http://localhost:8000/api/v1/apply-loan \
       "bank_analyzer": "SUCCESS",
       "gst_verifier": "SUCCESS"
     }
-  }' | jq -r '.application_id')
+  }' | python3 -c 'import json,sys; print(json.load(sys.stdin)["application_id"])')
 
 echo "$APP_ID"
 ```
 
-Expected apply response shape:
-
-```json
-{
-  "application_id": "generated-uuid",
-  "status": "PENDING",
-  "message": "Application received and queued for processing"
-}
-```
-
-Poll until the status is terminal:
+Check status:
 
 ```bash
-curl -s "http://localhost:8000/api/v1/status/$APP_ID" | jq
+curl -s \
+  -H "X-API-Key: dev-key-read-only" \
+  "http://localhost:8000/api/v1/status/$APP_ID"
 ```
 
-Expected final status:
+Expected terminal shape:
 
 ```json
 {
-  "application_id": "generated-uuid",
+  "application_id": "uuid",
   "status": "COMPLETED",
   "updated_at": "timestamp"
 }
 ```
 
-Get the decision:
+Check decision:
 
 ```bash
-curl -s "http://localhost:8000/api/v1/decision/$APP_ID" | jq
+curl -s \
+  -H "X-API-Key: dev-key-read-only" \
+  "http://localhost:8000/api/v1/decision/$APP_ID"
 ```
 
-Expected decision characteristics:
+Expected shape:
 
 ```json
 {
+  "application_id": "uuid",
   "decision": "APPROVE",
-  "risk_score": 88.35,
-  "confidence": 1.0,
+  "confidence": 0.7,
   "data_reliability": 1.0,
+  "risk_score": 64.1,
   "rule_version": "RULE_SET_V1"
 }
 ```
 
-Get the explanation:
+Check explanation:
 
 ```bash
-curl -s "http://localhost:8000/api/v1/explanation/$APP_ID" | jq
+curl -s \
+  -H "X-API-Key: dev-key-read-only" \
+  "http://localhost:8000/api/v1/explanation/$APP_ID"
 ```
 
-Expected explanation characteristics:
+Expected shape:
 
 ```json
 {
+  "application_id": "uuid",
   "decision": "APPROVE",
-  "summary": "Decision APPROVE was produced from verified data sources with confidence 1.00.",
-  "rule_version": "RULE_SET_V1"
-}
-```
-
-Replay the same request:
-
-```bash
-curl -s -X POST http://localhost:8000/api/v1/apply-loan \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: demo-green-001" \
-  -d '{
-    "idempotency_key": "demo-green-001",
-    "user_data": {
-      "name": "Jane Doe",
-      "pan": "AAAAA1111F",
-      "monthly_income": 150000,
-      "existing_emis": 20000,
-      "loan_amount": 500000,
-      "tenure_months": 36
-    },
-    "failure_flags": {
-      "credit_bureau": "SUCCESS",
-      "bank_analyzer": "SUCCESS",
-      "gst_verifier": "SUCCESS"
-    }
-  }' | jq
-```
-
-Expected: HTTP `200` with the same `application_id`.
-
-### Scenario 2: Credit Bureau Down
-
-This scenario uses `TIMEOUT`. The worker retries and then uses conservative fallback credit score `600`. It can take close to a minute because the timeout path is intentionally real enough to exercise retry/backoff behavior.
-
-```bash
-APP_ID=$(curl -s -X POST http://localhost:8000/api/v1/apply-loan \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: demo-credit-timeout-001" \
-  -d '{
-    "idempotency_key": "demo-credit-timeout-001",
-    "user_data": {
-      "name": "Jane Doe",
-      "pan": "AAAAA1111F",
-      "monthly_income": 150000,
-      "existing_emis": 20000,
-      "loan_amount": 500000,
-      "tenure_months": 36
-    },
-    "failure_flags": {
-      "credit_bureau": "TIMEOUT",
-      "bank_analyzer": "SUCCESS",
-      "gst_verifier": "SUCCESS"
-    }
-  }' | jq -r '.application_id')
-```
-
-After processing:
-
-```bash
-curl -s "http://localhost:8000/api/v1/decision/$APP_ID" | jq
-```
-
-Expected decision characteristics:
-
-```json
-{
-  "decision": "NEEDS_REVIEW",
-  "risk_score": 72.46,
-  "confidence": 0.54,
-  "data_reliability": 0.6,
-  "factors": [
-    "risk_score (computed) = 72.46",
-    "credit_component (fallback) = 26.67/40.00 (credit_score=600)",
-    "Confidence below threshold - routed to manual review"
+  "summary": "Decision APPROVE was produced from verified data sources with confidence 0.70.",
+  "timeline": [
+    {"step": "PROCESSING_STARTED", "status": "PROCESSING"},
+    {"step": "CREDIT_BUREAU_FETCH", "status": "SUCCESS"},
+    {"step": "GST_VERIFIER_FETCH", "status": "SUCCESS"},
+    {"step": "BANK_ANALYZER_FETCH", "status": "SUCCESS"},
+    {"step": "DECISION_CALCULATION", "status": "APPROVE"}
   ],
   "rule_version": "RULE_SET_V1"
 }
 ```
 
-Why: `TIMEOUT` plus fallback credit lowers `data_reliability` to `0.60`. The risk score is still numerically approvable, but calibrated confidence applies the boundary-distance factor and falls to `0.54`, forcing manual review.
+Replay the same request with the same idempotency key and payload. Expected: `200` and the same `application_id`.
 
-Audit trace:
+Reuse the same idempotency key with a different payload. Expected: `409 Conflict`.
 
-```bash
-docker compose exec postgres psql -U auditlend -d auditlend \
-  -c "SELECT step, error_type, fallback_used, fallback_reason FROM audit_logs WHERE application_id = '$APP_ID' ORDER BY id;"
-```
+## Deterministic Failure Scenarios
 
-Expected audit characteristics:
+All examples require `X-API-Key: dev-key-read-write` for submit and `X-API-Key: dev-key-read-only` for reads.
 
-```text
-CREDIT_BUREAU_FETCH | TIMEOUT | t | TIMEOUT
-DECISION_CALCULATION | null | f | null
-MANUAL_REVIEW_ROUTING | null | f | null
-```
+### Credit Bureau Timeout
 
-### Scenario 3: Partial Bank Data
-
-This scenario simulates incomplete bank analysis. The bank mock omits `income_stability`; the engine fills it with neutral `0.5` and applies a confidence penalty.
-
-```bash
-APP_ID=$(curl -s -X POST http://localhost:8000/api/v1/apply-loan \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: demo-bank-partial-001" \
-  -d '{
-    "idempotency_key": "demo-bank-partial-001",
-    "user_data": {
-      "name": "Jane Doe",
-      "pan": "AAAAA1111F",
-      "monthly_income": 150000,
-      "existing_emis": 20000,
-      "loan_amount": 500000,
-      "tenure_months": 36
-    },
-    "failure_flags": {
-      "credit_bureau": "SUCCESS",
-      "bank_analyzer": "PARTIAL_DATA",
-      "gst_verifier": "SUCCESS"
-    }
-  }' | jq -r '.application_id')
-```
-
-Decision:
-
-```bash
-curl -s "http://localhost:8000/api/v1/decision/$APP_ID" | jq
-```
-
-Expected decision characteristics:
+Input:
 
 ```json
-{
-  "decision": "APPROVE",
-  "risk_score": 77.9,
-  "confidence": 0.72,
-  "data_reliability": 0.8,
-  "factors": [
-    "income_stability_component (default) = 10.00/20.00 (income_stability=0.50)"
-  ]
+"failure_flags": {
+  "credit_bureau": "TIMEOUT",
+  "bank_analyzer": "SUCCESS",
+  "gst_verifier": "SUCCESS"
 }
 ```
 
-Explanation:
+Expected behavior:
 
-```bash
-curl -s "http://localhost:8000/api/v1/explanation/$APP_ID" | jq
-```
+- Credit provider retries and falls back to conservative credit score `600`.
+- Data reliability is reduced.
+- Calibrated confidence can force `NEEDS_REVIEW`.
+- Audit log includes `CREDIT_BUREAU_FETCH` with `TIMEOUT` and fallback information.
 
-Expected explanation characteristics:
+### Partial Bank Data
+
+Input:
 
 ```json
-{
-  "summary": "Decision APPROVE was produced with degraded data quality...",
-  "factors": [
-    {
-      "name": "Income Stability",
-      "value": "0.5",
-      "status": "partial"
-    }
-  ]
+"failure_flags": {
+  "credit_bureau": "SUCCESS",
+  "bank_analyzer": "PARTIAL_DATA",
+  "gst_verifier": "SUCCESS"
 }
 ```
 
-### Scenario 4: Total Data Meltdown
+Expected behavior:
 
-This scenario combines three degraded sources. The engine should force manual review due to confidence below `0.6`.
+- Missing income stability is filled with neutral `0.5`.
+- Data reliability is reduced.
+- Decision may still approve if the risk score and confidence remain sufficient.
+- Explanation marks the degraded bank data path.
 
-```bash
-APP_ID=$(curl -s -X POST http://localhost:8000/api/v1/apply-loan \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: demo-meltdown-001" \
-  -d '{
-    "idempotency_key": "demo-meltdown-001",
-    "user_data": {
-      "name": "Jane Doe",
-      "pan": "AAAAA1111F",
-      "monthly_income": 150000,
-      "existing_emis": 20000,
-      "loan_amount": 500000,
-      "tenure_months": 36
-    },
-    "failure_flags": {
-      "credit_bureau": "SERVICE_DOWN",
-      "bank_analyzer": "FORMAT_ERROR",
-      "gst_verifier": "NO_RECORD"
-    }
-  }' | jq -r '.application_id')
-```
+### Total External Data Meltdown
 
-Decision:
-
-```bash
-curl -s "http://localhost:8000/api/v1/decision/$APP_ID" | jq
-```
-
-Expected decision characteristics:
+Input:
 
 ```json
-{
-  "decision": "NEEDS_REVIEW",
-  "risk_score": 36.46,
-  "confidence": 0.1,
-  "data_reliability": 0.2,
-  "factors": [
-    "risk_score (computed) = 36.46",
-    "credit_component (fallback) = 26.67/40.00 (credit_score=600)",
-    "gst_gate (applied) = risk_score capped at 36.46",
-    "Confidence below threshold - routed to manual review"
-  ]
+"failure_flags": {
+  "credit_bureau": "SERVICE_DOWN",
+  "bank_analyzer": "FORMAT_ERROR",
+  "gst_verifier": "NO_RECORD"
 }
 ```
 
-Explanation:
+Expected behavior:
 
-```bash
-curl -s "http://localhost:8000/api/v1/explanation/$APP_ID" | jq
-```
+- Conservative fallbacks are applied.
+- Data reliability drops sharply.
+- Application routes to manual review.
+- Audit timeline records each failing source.
 
-Expected explanation characteristics:
+### GST PAN Mismatch
+
+Input:
 
 ```json
-{
-  "decision": "NEEDS_REVIEW",
-  "summary": "The system had insufficient reliable data to make an automatic decision...",
-  "timeline": [
-    {"step": "CREDIT_BUREAU_FETCH", "status": "SERVICE_DOWN"},
-    {"step": "BANK_ANALYZER_FETCH", "status": "FORMAT_ERROR"},
-    {"step": "GST_VERIFIER_FETCH", "status": "NO_RECORD"},
-    {"step": "DECISION_CALCULATION", "status": "NEEDS_REVIEW"},
-    {"step": "MANUAL_REVIEW_OVERRIDE", "status": "NEEDS_REVIEW"}
-  ]
+"failure_flags": {
+  "credit_bureau": "SUCCESS",
+  "bank_analyzer": "SUCCESS",
+  "gst_verifier": "PAN_MISMATCH"
 }
 ```
 
-### Scenario 5: GST Non-Compliance Blocks Approval
+Expected behavior:
 
-Even with excellent credit, explicit GST non-compliance is a gating factor. The engine caps the effective risk score at `54`, preventing automatic approval and routing the application to review unless another decline rule applies.
-
-```bash
-APP_ID=$(curl -s -X POST http://localhost:8000/api/v1/apply-loan \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: demo-gst-mismatch-001" \
-  -d '{
-    "idempotency_key": "demo-gst-mismatch-001",
-    "user_data": {
-      "name": "Jane Doe",
-      "pan": "AAAAA1111F",
-      "monthly_income": 150000,
-      "existing_emis": 10000,
-      "loan_amount": 500000,
-      "tenure_months": 36
-    },
-    "failure_flags": {
-      "credit_bureau": "SUCCESS",
-      "bank_analyzer": "SUCCESS",
-      "gst_verifier": "PAN_MISMATCH"
-    }
-  }' | jq -r '.application_id')
-```
-
-Expected decision characteristics:
-
-```json
-{
-  "decision": "NEEDS_REVIEW",
-  "factors": [
-    "gst_component (non_compliant) = 0.00/15.00",
-    "gst_gate (applied) = risk_score capped at 54.00"
-  ]
-}
-```
+- GST compliance is explicitly false.
+- Effective risk score is capped below automatic approval.
+- Application routes to review unless another decline rule applies.
 
 ## API Reference
 
 ### `POST /api/v1/apply-loan`
 
-Creates a loan application and enqueues asynchronous processing.
+Creates a loan application and records an outbox message for asynchronous processing.
 
 Headers:
 
-- `Content-Type: application/json`
-- `Idempotency-Key: <unique logical request key>`
+```text
+Content-Type: application/json
+X-API-Key: dev-key-read-write
+Idempotency-Key: unique-logical-request-key
+```
 
-Request body:
+Request:
 
 ```json
 {
   "idempotency_key": "req-001",
   "user_data": {
     "name": "Jane Doe",
-    "pan": "AAAAA1111F",
-    "monthly_income": 150000,
-    "existing_emis": 20000,
+    "pan": "ABCDE1234F",
+    "monthly_income": 120000,
+    "existing_emis": 25000,
     "loan_amount": 500000,
     "tenure_months": 36,
     "bank_statement": []
@@ -479,14 +440,18 @@ Request body:
 
 Responses:
 
-- `201`: new application accepted
-- `200`: same idempotency key and same payload replayed
-- `400`: validation error
-- `409`: same idempotency key reused with different payload
+| Code | Meaning |
+| --- | --- |
+| `201` | New application accepted |
+| `200` | Same idempotency key and same payload replayed |
+| `400` | Validation error |
+| `401` | Missing or invalid API key |
+| `403` | API key lacks required scope |
+| `409` | Same idempotency key reused with a different payload |
 
 ### `GET /api/v1/status/{application_id}`
 
-Returns:
+Requires read scope.
 
 ```json
 {
@@ -498,14 +463,7 @@ Returns:
 
 ### `GET /api/v1/decision/{application_id}`
 
-If processing:
-
-```json
-{
-  "status": "PROCESSING",
-  "message": "Decision not yet available"
-}
-```
+Requires read scope.
 
 If complete:
 
@@ -513,28 +471,30 @@ If complete:
 {
   "application_id": "uuid",
   "decision": "APPROVE|DECLINE|NEEDS_REVIEW",
-  "confidence": 1.0,
+  "confidence": 0.7,
   "data_reliability": 1.0,
-  "risk_score": 88.35,
-  "factors": ["risk_score (computed) = 88.35"],
+  "risk_score": 64.1,
+  "factors": ["risk_score (computed) = 64.10"],
   "rule_version": "RULE_SET_V1"
 }
 ```
 
+If still processing, the endpoint returns `202`.
+
 ### `GET /api/v1/explanation/{application_id}`
 
-Returns:
+Requires read scope.
 
 ```json
 {
   "application_id": "uuid",
-  "decision": "NEEDS_REVIEW",
+  "decision": "APPROVE",
   "summary": "Human-readable explanation",
   "factors": [
-    {"name": "Credit Score", "value": "600", "status": "fallback"}
+    {"name": "Risk Score", "value": "64.10", "status": "computed"}
   ],
   "timeline": [
-    {"step": "CREDIT_BUREAU_FETCH", "status": "TIMEOUT", "timestamp": "timestamp"}
+    {"step": "DECISION_CALCULATION", "status": "APPROVE", "timestamp": "timestamp"}
   ],
   "rule_version": "RULE_SET_V1",
   "generated_at": "timestamp"
@@ -543,13 +503,17 @@ Returns:
 
 ### `GET /metrics`
 
-Exposes Prometheus metrics, including:
+No API key required in this local stack.
+
+Prometheus series include:
 
 - `auditlend_applications_total`
 - `auditlend_external_api_requests_total`
 - `auditlend_external_api_latency_seconds`
 - `auditlend_circuit_breaker_state`
 - `auditlend_decision_confidence`
+- `auditlend_task_duration_seconds`
+- `auditlend_task_failures_total`
 
 ### Error Format
 
@@ -564,58 +528,36 @@ Errors use Problem Details style:
 }
 ```
 
-## Mock API Reference
-
-Credit bureau:
-
-```bash
-curl "http://localhost:8001/credit-score?pan=AAAAA1111F&fail_mode=SUCCESS"
-curl "http://localhost:8001/credit-score?pan=AAAAA1111F&fail_mode=STALE_DATA"
-curl "http://localhost:8001/credit-score?pan=AAAAA1111F&fail_mode=SERVICE_DOWN"
-```
-
-Bank analyzer:
-
-```bash
-curl -X POST "http://localhost:8002/analyze?fail_mode=PARTIAL_DATA" \
-  -H "Content-Type: application/json" \
-  -d '{"pan":"AAAAA1111F","bank_statement":[]}'
-```
-
-GST verifier:
-
-```bash
-curl "http://localhost:8003/verify-gst?pan=AAAAA1111F&fail_mode=NO_RECORD"
-```
-
 ## Configuration
 
-| Variable | Purpose | Default in Compose |
+Production secrets are not committed. Local dev-only values can live in `docker-compose.override.yml`, which is ignored by git.
+
+| Variable | Purpose | Compose value |
 | --- | --- | --- |
-| `DATABASE_URL` | Sync SQLAlchemy/Postgres URL for workers and migrations | `postgresql://auditlend:auditlend@postgres:5432/auditlend` |
-| `ASYNC_DATABASE_URL` | Async SQLAlchemy/Postgres URL for FastAPI | `postgresql+asyncpg://auditlend:auditlend@postgres:5432/auditlend` |
-| `REDIS_URL` | Celery broker/result backend and circuit state | `redis://redis:6379/0` |
-| `IDEMPOTENCY_CACHE_TTL_SECONDS` | Redis idempotency replay cache TTL | `86400` |
-| `CREDIT_BUREAU_URL` | Credit bureau service base URL | `http://credit-bureau:8001` |
-| `BANK_ANALYZER_URL` | Bank analyzer service base URL | `http://bank-analyzer:8002` |
-| `GST_VERIFIER_URL` | GST verifier service base URL | `http://gst-verifier:8003` |
-| `CONFIDENCE_THRESHOLD` | Below this value, force manual review | `0.6` |
-| Active rule set | Versioned in `engine/rule_sets.py`; changes require a new immutable rule set | `RULE_SET_V1` |
-| `PII_ENCRYPTION_KEY` | Required 64-character hex AES-256-GCM key; insecure defaults are rejected at startup | `${PII_ENCRYPTION_KEY}` |
-| `PAN_HASH_SALT` | Required per-environment salt used for SHA-256 PAN hashing; insecure defaults are rejected at startup | `${PAN_HASH_SALT}` |
-| `API_KEYS` | Comma-separated API keys with optional scopes, e.g. `key:read-write,key2:read` | `${API_KEYS}` |
-| `CORS_ALLOWED_ORIGINS` | Comma-separated trusted browser origins; wildcard is rejected | `http://localhost:3000,http://localhost:8000` |
-| `CIRCUIT_BREAKER_THRESHOLD` | Failures before opening service circuit | `5` |
-| `CIRCUIT_BREAKER_WINDOW_SECONDS` | Failure counting window | `60` |
+| `DATABASE_URL` | Sync SQLAlchemy/Postgres URL | `postgresql://auditlend:auditlend@postgres:5432/auditlend` |
+| `ASYNC_DATABASE_URL` | Async SQLAlchemy/Postgres URL | `postgresql+asyncpg://auditlend:auditlend@postgres:5432/auditlend` |
+| `AUDITLEND_ASYNC_DB_POOL` | Optional async DB pool mode; `null` is used by multi-event-loop tests only | `pooled` |
+| `REDIS_URL` | Celery, idempotency cache, circuit breaker state | `redis://redis:6379/0` |
+| `IDEMPOTENCY_CACHE_TTL_SECONDS` | Redis idempotency replay TTL | `86400` |
+| `CREDIT_BUREAU_URL` | Credit mock base URL | `http://credit-bureau:8001` |
+| `BANK_ANALYZER_URL` | Bank mock base URL | `http://bank-analyzer:8002` |
+| `GST_VERIFIER_URL` | GST mock base URL | `http://gst-verifier:8003` |
+| `CONFIDENCE_THRESHOLD` | Manual review confidence threshold | `0.6` |
+| `PII_ENCRYPTION_KEY` | Required 64-character hex AES-256-GCM key | `${PII_ENCRYPTION_KEY}` |
+| `PAN_HASH_SALT` | Required per-environment PAN hash salt | `${PAN_HASH_SALT}` |
+| `API_KEYS` | Comma-separated API keys with optional scopes | `${API_KEYS}` |
+| `CORS_ALLOWED_ORIGINS` | Comma-separated trusted browser origins; wildcard rejected | `http://localhost:3000,http://localhost:8000` |
+| `CIRCUIT_BREAKER_THRESHOLD` | Failures before opening circuit | `5` |
+| `CIRCUIT_BREAKER_WINDOW_SECONDS` | Circuit failure counting window | `60` |
 | `CIRCUIT_BREAKER_TIMEOUT_SECONDS` | Open circuit cooldown | `120` |
 | `CIRCUIT_BREAKER_PROBE_LOCK_SECONDS` | Half-open single-probe lock TTL | `10` |
 | `MAX_RETRIES` | Per-service retry count | `3` |
 | `RETRY_BACKOFF_BASE_SECONDS` | Exponential backoff base | `2` |
-| `EXTERNAL_API_TIMEOUT_SECONDS` | Per-call HTTP timeout for external service adapters | `30.0` |
-| `TASK_TIMEOUT_SECONDS` | Worker processing watchdog | `60` |
-| `PROCESSING_LOCK_TIMEOUT_SECONDS` | Age after which stuck PROCESSING apps can be reclaimed | `300` |
-| `OUTBOX_POLL_INTERVAL_SECONDS` | Worker outbox poll cadence | `1.0` |
-| `WORKER_HEALTH_PORT` | Worker HTTP health endpoint port | `8004` |
+| `EXTERNAL_API_TIMEOUT_SECONDS` | External adapter HTTP timeout | `30.0` |
+| `TASK_TIMEOUT_SECONDS` | Worker task watchdog | `60` |
+| `PROCESSING_LOCK_TIMEOUT_SECONDS` | Stale processing reclaim age | `300` |
+| `OUTBOX_POLL_INTERVAL_SECONDS` | Worker outbox poll interval | `1.0` |
+| `WORKER_HEALTH_PORT` | Worker health server port | `8004` |
 | `LOG_LEVEL` | Runtime logging level | `INFO` |
 
 ## Testing
@@ -627,52 +569,92 @@ python3.11 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-Run unit tests:
+Run the full verified test command:
 
 ```bash
-.venv/bin/pytest tests/unit -q
+.venv/bin/python -m pytest tests/ -v --cov=. --cov-fail-under=85 -rs
 ```
 
-Run all tests:
+Final verified result:
+
+```text
+124 passed
+0 skipped
+Required test coverage of 85% reached
+Total coverage: 87.24%
+```
+
+Run only unit tests:
 
 ```bash
-.venv/bin/pytest tests/ -q
+.venv/bin/python -m pytest tests/unit -q
 ```
 
-PostgreSQL-backed integration and chaos tests auto-skip when no database is available. To enable them, run the Docker stack or provide:
+Run integration and chaos tests with live Postgres/Redis:
 
 ```bash
-export AUDITLEND_TEST_DATABASE_URL=postgresql://auditlend:auditlend@localhost:5432/auditlend
-export AUDITLEND_TEST_ASYNC_DATABASE_URL=postgresql+asyncpg://auditlend:auditlend@localhost:5432/auditlend
-export AUDITLEND_TEST_REDIS_URL=redis://localhost:6379/0
+docker compose up -d postgres redis credit-bureau bank-analyzer gst-verifier
+.venv/bin/python -m pytest tests/integration tests/chaos -q
 ```
 
-Then:
+## Database and Data Safety Checks
+
+Confirm encrypted application storage:
 
 ```bash
-.venv/bin/pytest tests/integration -q
-.venv/bin/pytest tests/chaos -q
+docker compose exec postgres psql -U auditlend -d auditlend \
+  -c "SELECT pan_hash, encrypted_user_data IS NOT NULL AS has_ciphertext, encryption_nonce IS NOT NULL AS has_nonce FROM loan_applications LIMIT 5;"
 ```
 
-Engine coverage:
+Confirm audit log immutability:
 
 ```bash
-.venv/bin/pytest tests/unit/test_scoring.py tests/unit/test_confidence.py tests/unit/test_confidence_calibrated.py tests/unit/test_rules.py tests/unit/test_decision_engine.py \
-  -q --cov=engine --cov-report=term-missing
+docker compose exec postgres psql -U auditlend -d auditlend \
+  -c "UPDATE audit_logs SET step = 'TEST' WHERE id = 1;"
 ```
 
-## Project Philosophy
+Expected: PostgreSQL rejects the update with the append-only trigger.
 
-AuditLend is built around a few non-negotiable ideas:
+## CI
 
-- Determinism beats cleverness. Business outputs must be replayable from inputs.
-- Idempotency is part of correctness, not an API nicety.
-- Risk score, data reliability, and calibrated confidence are distinct values.
-- Every fallback must lower data reliability.
-- Raw PAN is never stored in plaintext; application PII is AES-GCM encrypted at rest.
-- Every important step must write an audit entry with input, output, failure type, fallback usage, and rule version.
-- The explanation endpoint must read from the audit trail, not from whatever the current code thinks would happen today.
-- External failures are named states, not surprises.
-- A stuck worker should be recoverable. A duplicate terminal decision should be impossible.
+GitHub Actions workflow:
 
-This makes the system slower to fake and harder to hand-wave, which is exactly why it is useful.
+```text
+.github/workflows/ci.yaml
+```
+
+The workflow provisions Postgres and Redis, runs migrations, sets required crypto/auth env vars, runs tests with coverage, and fails if tests are skipped or coverage falls below the configured threshold.
+
+## Rule Governance
+
+Current active rule set:
+
+```text
+RULE_SET_V1
+```
+
+Rule sets are immutable dataclasses in `engine/rule_sets.py`. Changing weights or thresholds should create a new rule set version and update `docs/CALIBRATION.md`.
+
+Current calibration status:
+
+- `RULE_SET_V1` uses SME-derived heuristic weights.
+- It is deterministic and test-covered.
+- It still needs empirical validation against historical repayment/default data before live lending use.
+
+## Operational Notes
+
+- The worker must register `worker.tasks.process_application.process_application`; this is verified in Docker logs during final testing.
+- The outbox poller starts when the Celery worker is ready.
+- API and worker images set `PYTHONPATH=/app` so imports are stable inside containers.
+- `docker-compose.yml` does not run API with `--reload`; dev reload belongs in `docker-compose.dev.yml`.
+- The local stack intentionally keeps infrastructure simple. Production deployment should move secrets, TLS, identity, logging retention, container hardening, and network policy into the target platform.
+
+## Project Principles
+
+- Determinism beats hidden randomness.
+- Idempotency is part of correctness.
+- Audit logs must be useful and PII-safe.
+- Risk score, data reliability, and confidence are separate concepts.
+- Fallback data should reduce confidence and route ambiguous cases to review.
+- The explanation endpoint must explain what actually happened, using the audit trail.
+- The README should describe the system as it is, not as a sales page.
